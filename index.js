@@ -1018,6 +1018,28 @@
         catbar.querySelectorAll('.om-catbtn').forEach(function (btn) {
             btn.addEventListener('click', function () { curCat = btn.dataset.c; renderCatbar(); renderGrid(); });
         });
+        // ★ 电脑端支持：鼠标滚轮横向滚动 + 鼠标拖拽滚动
+        if (!catbar._wheelBound) {
+            catbar.addEventListener('wheel', function (e) {
+                if (Math.abs(e.deltaY) > 0) {
+                    e.preventDefault();
+                    catbar.scrollLeft += e.deltaY;
+                }
+            }, { passive: false });
+            var _drag = { down: false, startX: 0, scrollL: 0 };
+            catbar.addEventListener('mousedown', function (e) {
+                _drag.down = true; _drag.startX = e.pageX; _drag.scrollL = catbar.scrollLeft;
+                catbar.style.cursor = 'grabbing'; catbar.style.userSelect = 'none';
+            });
+            document.addEventListener('mousemove', function (e) {
+                if (!_drag.down) return;
+                catbar.scrollLeft = _drag.scrollL - (e.pageX - _drag.startX);
+            });
+            document.addEventListener('mouseup', function () {
+                if (_drag.down) { _drag.down = false; catbar.style.cursor = ''; catbar.style.userSelect = ''; }
+            });
+            catbar._wheelBound = true;
+        }
     }
 
     // ── 网格区渲染 ────────────────────────────────────────────
