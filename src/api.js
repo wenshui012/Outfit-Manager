@@ -1,0 +1,170 @@
+// ── 穿搭管理器 · API 调用 ──────────────────────────────────
+// Vision API、模型选择、批量描述生成
+
+import { load, save } from './db.js';
+import { getById } from './data.js';
+import { toast, getPopupLayer, esc } from './utils.js';
+
+// ── 端点规范化 ─────────────────────────────────────────
+export function normalizeEndpoint(raw, path) {
+    try {
+        var u = raw.replace(/\/+$/, '');
+        if (u.match(/\/v\d+$/)) u = u.replace(/\/v\d+$/, '');
+        if (u.match(/\/v\d+\/.*$/)) u = u.replace(/\/v\d+\/.*$/, '');
+        return u + path;
+    } catch (e) { return raw + path; }
+}
+
+// ── 获取模型列表 ─────────────────────────────────────────
+export function fetchModelList(apiCfg, cb) {
+    var url = normalizeEndpoint(apiCfg.endpoint, '/v1/models');
+    fetch(url, {
+        headers: { 'Authorization': 'Bearer ' + apiCfg.key }
+    }).then(function (r) {
+        if (!r.ok) return r.text().then(function (t) { throw new Error('HTTP ' + r.status); });
+        return r.json();
+    }).then(function (data) {
+        var models = [];
+        if (data && data.data) {
+            var list = Array.isArray(data.data) ? data.data : [];
+            list.forEach(function (m) {
+                var id = m.id || m.name || '';
+                if (id) models.push(id);
+            });
+        }
+        models.sort(function (a, b) { return a.toLowerCase().localeCompare(b.toLowerCase()); });
+        cb(null, models);
+    }).catch(function (e) { cb(e.message || String(e)); });
+}
+
+// ── 模型选择弹窗 ─────────────────────────────────────────
+export function openModelPicker(apiCfg, onSelect) {
+    toast('正在获取模型列表…');
+    fetchModelList(apiCfg, function (err, models) {
+        if (err) { toast('获取失败：' + err, true); return; }
+        if (!models || models.length === 0) { toast('未找到可用模型', true); return; }
+
+        var _mp = getPopupLayer();
+        var listHtml = models.map(function (m) {
+            return '<div class="om-model-item" data-m="' + esc(m) + '" style="padding:10px 14px;cursor:pointer;border-bottom:1px solid rgba(127,127,127,.08);font-size:.88em;transition:.12s;">' + esc(m) + '</div>';
+        }).join('');
+
+        var modal = document.createElement('div');
+        modal.className = 'om-modal';
+        modal.innerHTML = '<div class="om-modal-box" style="max-height:70vh;"><div class="om-modal-title">选择模型</div>' +
+            '<input id="om-model-search" type="text" placeholder="搜索模型…" style="width:100%;box-sizing:border-box;padding:8px 10px;border-radius:8px;border:1px solid rgba(127,127,127,.2);background:rgba(127,127,127,.08);color:inherit;font-size:.88em;font-family:inherit;" />' +
+            '<div style="max-height:50vh;overflow-y:auto;border:1px solid rgba(127,127,127,.12);border-radius:8px;">' + listHtml + '</div>' +
+            '<button id="om-model-cancel" class="om-modal-cancel">取消</button></div>';
+        _mp.appendChild(modal);
+
+        modal.addEventListener('click', function (e) { if (e.target === modal) _mp.removeChild(modal); });
+        modal.querySelector('#om-model-cancel').addEventListener('click', function () { _mp.removeChild(modal); });
+
+        modal.querySelector('#om-model-search').addEventListener('input', function () {
+            var q = this.value.toLowerCase();
+            modal.querySelectorAll('.om-model-item').forEach(function (item) {
+                item.style.display = item.dataset.m.toLowerCase().indexOf(q) !== -1 ? '' : 'none';
+            });
+        });
+        setTimeout(function () { modal.querySelector('#om-model-search').focus(); }, 50);
+
+        modal.querySelectorAll('.om-model-item').forEach(function (item) {
+            item.addEventListener('mouseenter', function () { item.style.background = 'rgba(127,127,127,.12)'; });
+            item.addEventListener('mouseleave', function () { item.style.background = ''; });
+            item.addEventListener('click', function () {
+                onSelect(item.dataset.m);
+                if (modal.parentNode) _mp.removeChild(modal);
+            });
+        });
+    });
+}
+
+// ── 单次 Vision API 调用 ─────────────────────────────────
+export function callVisionAPI(apiCfg, image, systemPrompt, cb) {
+    var url = normalizeEndpoint(apiCfg.endpoint, '/v1/chat/completions');
+    var imgContent = image.dataUrl.indexOf('data:') === 0 ? image.dataUrl : 'data:image/jpeg;base64,' + image.dataUrl;
+    var body = {
+        model: apiCfg.model,
+        messages: [{
+            role: 'user',
+            content: [
+                { type: 'image_url', image_url: { url: imgContent } },
+                { type: 'text', text: systemPrompt || '请描述图中服装' }
+            ]
+        }],
+        max_tokens: 1024
+    };
+    fetch(url, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + apiCfg.key },
+        body: JSON.stringify(body)
+    }).then(function (r) {
+        if (!r.ok) return r.text().then(function (t) { throw new Error('HTTP ' + r.status + ': ' + t.slice(0, 200)); });
+        return r.json();
+    }).then(function (data) {
+        var text = '';
+        if (data.choices && data.choices[0]) {
+            var msg = data.choices[0].message;
+            if (msg) {
+                if (typeof msg.content === 'string') text = msg.content;
+                else if (Array.isArray(msg.content)) {
+                    var parts = msg.content.filter(function (p) { return p.type === 'text'; });
+                    if (parts) text = parts.map(function (p) { return p.text || ''; }).join('');
+                }
+            }
+        }
+        cb(null, text.trim());
+    }).catch(function (e) { cb(e.message || String(e)); });
+}
+
+// ── 批量生成描述 ─────────────────────────────────────────
+export function batchGenerateDescriptions(outfitIds, progressCb, doneCb) {
+    var d = load();
+    var apiCfg = d.apiVision;
+    var concurrency = Math.max(1, Math.min(5, apiCfg.concurrency || 3));
+    var queue = [];
+    outfitIds.forEach(function (id) {
+        var o = getById(d, id);
+        if (!o || !o.imageData) return;
+        if (o.description && o.description.trim() && !apiCfg.overwrite) return;
+        queue.push({ id: id, name: o.name, dataUrl: o.imageData });
+    });
+    if (queue.length === 0) { doneCb(null, 0, []); return; }
+    var done = 0, errors = [], running = 0, idx = 0;
+    var total = queue.length;
+
+    function processNext() {
+        while (running < concurrency && idx < queue.length) {
+            (function (item) {
+                running++;
+                callVisionAPI(apiCfg, item, apiCfg.prompt, function (err, text) {
+                    running--;
+                    done++;
+                    if (err) { errors.push({ name: item.name, error: err }); }
+                    else {
+                        var dd = load();
+                        var o = getById(dd, item.id);
+                        if (o) { o.description = text; save(dd); }
+                    }
+                    if (progressCb) progressCb(done, total, err ? '❌ ' + item.name : '✅ ' + item.name);
+                    if (done >= total) { doneCb(null, done, errors); }
+                    else { processNext(); }
+                });
+            })(queue[idx]);
+            idx++;
+        }
+    }
+    processNext();
+}
+
+// ── 单套描述生成 ─────────────────────────────────────────
+export function generateSingleDescription(outfit, cb) {
+    var d = load();
+    var apiCfg = d.apiVision;
+    if (!apiCfg.endpoint || !apiCfg.key || !apiCfg.model) { cb('请先在设置中配置描述API'); return; }
+    if (!outfit.imageData) { cb('该穿搭没有图片'); return; }
+    callVisionAPI(apiCfg, { name: outfit.name, dataUrl: outfit.imageData }, apiCfg.prompt, function (err, text) {
+        if (err) cb(err);
+        else cb(null, text);
+    });
+}

@@ -1,0 +1,17 @@
+// ── 穿搭管理器 · 共享状态桥 ──────────────────────────────
+// 各模块注册回调到此处，避免循环依赖
+// UI 状态变量也集中存放
+
+export var state = {
+    darkMode: false,
+    curCat: '__all__',
+    batchMode: false,
+    batchSelected: [],
+    searchOpen: false,
+    searchQuery: '',
+    detailOpen: false,
+    collapsedGroups: {}
+};
+
+// 函数注册表：各模块把自己的函数注册进来，其他模块通过 fn.xxx() 调用
+export var fn = {};
