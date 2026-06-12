@@ -727,8 +727,8 @@ function openSettingsSheet() {
         refreshFab();
     });
     sheet.querySelector('#om-debug').addEventListener('change', function () { var dd = load(); dd.debug = this.checked; save(dd); });
-    sheet.querySelector('#om-exp').addEventListener('click', exportData);
-    sheet.querySelector('#om-imp').addEventListener('click', importData);
+    sheet.querySelector('#om-exp').addEventListener('click', function () { fn.exportData(); });
+    sheet.querySelector('#om-imp').addEventListener('click', function () { fn.importData(); });
     sheet.querySelector('#om-clear').addEventListener('click', function () {
         var dd = load();
         var label = dd.currentView === 'char' && dd.currentChar ? '「' + dd.currentChar + '」的穿搭' : 'User 的穿搭';
