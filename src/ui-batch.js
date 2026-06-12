@@ -1,0 +1,514 @@
+// ── 穿搭管理器 · 批量操作与导入导出 ──────────────────────
+// 批量标签、批量导入、批量AI生成、数据导出导入
+
+import { load, save } from './db.js';
+import { getCharData, getViewOutfits, getViewCategories, getById } from './data.js';
+import { genId, esc, toast, getPopupLayer, compressImage } from './utils.js';
+import { batchGenerateDescriptions } from './api.js';
+import { state, fn } from './bridge.js';
+
+// 需要从 ui-sheets.js 引入的通用函数
+var createSheet, closeSheet, getAllTagSuggestions;
+
+export function initBatchDeps(cs, cls, gats) {
+    createSheet = cs;
+    closeSheet = cls;
+    getAllTagSuggestions = gats;
+}
+
+// ── 批量标签选择面板 ──────────────────────────────────────
+function openBatchTagPanel(selectedIds, onDone) {
+    var d = load();
+    var tags = getAllTagSuggestions(d);
+    var allOutfits = getViewOutfits(d);
+    var count = selectedIds.length;
+
+    function countTag(tag) {
+        var n = 0;
+        allOutfits.forEach(function (o) { if (o.sceneTag && o.sceneTag.trim() === tag) n++; });
+        return n;
+    }
+
+    var sheet = createSheet([
+        '<div class="om-sheet-title"><i class="fa-solid fa-tags"></i>设置场景标签</div>',
+        '<div class="om-hint" style="margin-bottom:10px">为已选 ' + count + ' 套穿搭设置标签</div>',
+        '<div class="om-tagpanel">',
+        '<input type="text" class="om-tagpanel-search" id="om-btag-search" placeholder="搜索标签…" autocomplete="off" />',
+        '<div class="om-tagpanel-list" id="om-btag-list"></div>',
+        '<div class="om-tagpanel-add"><input type="text" id="om-btag-new" placeholder="输入新标签并应用…" /><button class="om-btn om-btn-safe" id="om-btag-apply">应用</button></div>',
+        '<div class="om-divider" style="margin:6px 0"></div>',
+        '<button class="om-btn om-btn-outline" id="om-btag-clear" style="width:100%;opacity:.6"><i class="fa-solid fa-eraser"></i> 清除所选穿搭的标签</button>',
+        '</div>',
+    ].join(''));
+
+    var listEl = sheet.querySelector('#om-btag-list');
+    var searchInp = sheet.querySelector('#om-btag-search');
+
+    function renderList(filter) {
+        var q = (filter || '').trim().toLowerCase();
+        var filtered = q ? tags.filter(function (t) { return t.toLowerCase().indexOf(q) !== -1; }) : tags;
+
+        if (filtered.length === 0) {
+            listEl.innerHTML = '<div class="om-tagpanel-empty">' + (q ? '没有匹配的标签' : '还没有标签') + '</div>';
+            return;
+        }
+
+        listEl.innerHTML = filtered.map(function (tag) {
+            return '<div class="om-cat-item om-btag-pick" data-tag="' + esc(tag) + '" style="cursor:pointer"><span class="om-cat-name">' + esc(tag) + '</span><span class="om-cat-count">' + countTag(tag) + '套</span></div>';
+        }).join('');
+
+        listEl.querySelectorAll('.om-btag-pick').forEach(function (item) {
+            item.addEventListener('click', function () {
+                applyTag(item.dataset.tag);
+            });
+        });
+    }
+
+    function applyTag(tag) {
+        var dd = load();
+        var vo = getViewOutfits(dd);
+        vo.forEach(function (o) { if (selectedIds.indexOf(o.id) !== -1) o.sceneTag = tag; });
+        save(dd); closeSheet(sheet);
+        toast('✅ 已设置标签：' + tag);
+        if (onDone) onDone();
+    }
+
+    renderList('');
+    searchInp.addEventListener('input', function () { renderList(this.value); });
+    setTimeout(function () { searchInp.focus(); }, 100);
+
+    // 输入新标签并直接应用
+    var newInp = sheet.querySelector('#om-btag-new');
+    sheet.querySelector('#om-btag-apply').addEventListener('click', function () {
+        var tag = newInp.value.trim();
+        if (!tag) { toast('请输入标签', true); return; }
+        applyTag(tag);
+    });
+    newInp.addEventListener('keydown', function (e) { if (e.key === 'Enter') sheet.querySelector('#om-btag-apply').click(); });
+
+    // 清除标签
+    sheet.querySelector('#om-btag-clear').addEventListener('click', function () {
+        var dd = load();
+        var vo = getViewOutfits(dd);
+        vo.forEach(function (o) { if (selectedIds.indexOf(o.id) !== -1) o.sceneTag = ''; });
+        save(dd); closeSheet(sheet);
+        toast('✅ 已清除 ' + count + ' 套穿搭的标签');
+        if (onDone) onDone();
+    });
+}
+
+// ── 导出 ──────────────────────────────────────────────────
+function doExport(data, filename) {
+    try {
+        var blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
+        var url = URL.createObjectURL(blob);
+        var a = document.createElement('a');
+        a.href = url; a.download = filename; document.body.appendChild(a); a.click();
+        setTimeout(function () { document.body.removeChild(a); URL.revokeObjectURL(url); }, 500);
+    } catch (e) { toast('导出失败：' + e.message, true); }
+}
+
+function exportData() {
+    var d = load();
+    var isCharView = d.currentView === 'char' && d.currentChar;
+    var modal = document.createElement('div');
+    modal.className = 'om-modal ' + (state.darkMode ? 'om-dark' : 'om-light');
+    modal.style.setProperty('z-index', '2147483647', 'important');
+
+    var charBtns = '';
+    if (isCharView) {
+        charBtns =
+            '<button class="om-modal-btn" id="om-exp-char-one"><i class="fa-solid fa-user" style="margin-right:8px"></i>导出「' + esc(d.currentChar) + '」<br><small style="opacity:.6;font-weight:400">当前角色的穿搭+分类</small></button>';
+    }
+    if (d.charNames && d.charNames.length > 0) {
+        charBtns +=
+            '<button class="om-modal-btn" id="om-exp-char-all"><i class="fa-solid fa-users" style="margin-right:8px"></i>导出全部角色<br><small style="opacity:.6;font-weight:400">所有角色的穿搭+分类</small></button>';
+    }
+
+    modal.innerHTML = '<div class="om-modal-box">' +
+        '<div class="om-modal-title"><i class="fa-solid fa-download" style="margin-right:6px"></i>导出数据</div>' +
+        '<button class="om-modal-btn" id="om-exp-all"><i class="fa-solid fa-database" style="margin-right:8px"></i>导出完整备份<br><small style="opacity:.6;font-weight:400">User+角色+预设+设置</small></button>' +
+        '<button class="om-modal-btn" id="om-exp-user"><i class="fa-solid fa-shirt" style="margin-right:8px"></i>仅导出 User 穿搭<br><small style="opacity:.6;font-weight:400">User的穿搭+分类</small></button>' +
+        charBtns +
+        '<button class="om-modal-cancel" id="om-exp-cancel">取消</button></div>';
+    var _mp = getPopupLayer();
+    modal.style.cssText = 'position:absolute !important;inset:0 !important;z-index:1 !important;background:rgba(0,0,0,.45) !important;display:flex !important;align-items:center !important;justify-content:center !important;padding:20px !important;box-sizing:border-box !important;pointer-events:auto !important;';
+    _mp.appendChild(modal);
+    modal.addEventListener('click', function (e) { if (e.target === modal) _mp.removeChild(modal); });
+    modal.querySelector('#om-exp-cancel').addEventListener('click', function () { _mp.removeChild(modal); });
+
+    document.getElementById('om-exp-all').addEventListener('click', function () {
+        _mp.removeChild(modal);
+        doExport(d, 'outfit-mgr-backup-' + new Date().toISOString().slice(0, 10) + '.json');
+        toast('✅ 已导出完整数据');
+    });
+
+    document.getElementById('om-exp-user').addEventListener('click', function () {
+        _mp.removeChild(modal);
+        doExport({ type: 'user', outfits: d.outfits, categories: d.categories }, 'outfit-mgr-user-' + new Date().toISOString().slice(0, 10) + '.json');
+        toast('✅ 已导出 User 穿搭');
+    });
+
+    var expCharOne = document.getElementById('om-exp-char-one');
+    if (expCharOne) expCharOne.addEventListener('click', function () {
+        _mp.removeChild(modal);
+        var cd = getCharData(d, d.currentChar);
+        doExport({ type: 'char', charName: d.currentChar, outfits: cd.outfits, categories: cd.categories }, 'outfit-mgr-char-' + d.currentChar + '-' + new Date().toISOString().slice(0, 10) + '.json');
+        toast('✅ 已导出「' + d.currentChar + '」');
+    });
+
+    var expCharAll = document.getElementById('om-exp-char-all');
+    if (expCharAll) expCharAll.addEventListener('click', function () {
+        _mp.removeChild(modal);
+        var charExport = { type: 'chars_all', charNames: d.charNames, chars: {} };
+        (d.charNames || []).forEach(function (cn) { charExport.chars[cn] = getCharData(d, cn); });
+        doExport(charExport, 'outfit-mgr-all-chars-' + new Date().toISOString().slice(0, 10) + '.json');
+        toast('✅ 已导出全部角色（' + d.charNames.length + '个）');
+    });
+}
+
+function importData() {
+    var modal = document.createElement('div');
+    modal.className = 'om-modal';
+    modal.style.setProperty('z-index', '2147483647', 'important');
+    modal.innerHTML = '<div class="om-modal-box">' +
+        '<div class="om-modal-title"><i class="fa-solid fa-upload" style="margin-right:6px"></i>导入数据</div>' +
+        '<div class="om-hint" style="margin-bottom:10px">选择之前导出的 .json 文件。</div>' +
+        '<button class="om-modal-btn" id="om-imp-merge"><i class="fa-solid fa-code-merge" style="margin-right:8px"></i>合并导入<br><small style="opacity:.6;font-weight:400">追加到现有数据，不覆盖</small></button>' +
+        '<button class="om-modal-btn" id="om-imp-replace"><i class="fa-solid fa-arrows-rotate" style="margin-right:8px"></i>覆盖导入<br><small style="opacity:.6;font-weight:400">替换现有穿搭（预设保留）</small></button>' +
+        '<input type="file" id="om-imp-file" accept=".json" style="display:none" />' +
+        '<button class="om-modal-cancel" id="om-imp-cancel">取消</button></div>';
+    var _mp2 = getPopupLayer();
+    modal.style.cssText = 'position:absolute !important;inset:0 !important;z-index:1 !important;background:rgba(0,0,0,.45) !important;display:flex !important;align-items:center !important;justify-content:center !important;padding:20px !important;box-sizing:border-box !important;pointer-events:auto !important;';
+    _mp2.appendChild(modal);
+    modal.addEventListener('click', function (e) { if (e.target === modal) _mp2.removeChild(modal); });
+    modal.querySelector('#om-imp-cancel').addEventListener('click', function () { _mp2.removeChild(modal); });
+    var fileInp = document.getElementById('om-imp-file');
+    var importMode = 'merge';
+    function triggerImport(mode) { importMode = mode; fileInp.click(); }
+    document.getElementById('om-imp-merge').addEventListener('click', function () { triggerImport('merge'); });
+    document.getElementById('om-imp-replace').addEventListener('click', function () { triggerImport('replace'); });
+    fileInp.addEventListener('change', function () {
+        var file = fileInp.files[0]; if (!file) return;
+        var reader = new FileReader();
+        reader.onload = function (e) {
+            try { var imported = JSON.parse(e.target.result); _mp2.removeChild(modal); processImport(imported, importMode); }
+            catch (err) { toast('文件解析失败，请确认是有效的 JSON 文件', true); }
+        };
+        reader.onerror = function () { toast('文件读取失败', true); };
+        reader.readAsText(file, 'utf-8');
+    });
+}
+
+function processImport(imported, mode) {
+    var dd = load();
+    try {
+        if (imported.type === 'preset' && imported.preset) {
+            var p = imported.preset; p.id = genId();
+            if (!Array.isArray(dd.presets)) dd.presets = [];
+            dd.presets.push(p); save(dd); fn.renderGrid(); toast('✅ 已导入预设：' + p.name); return;
+        }
+
+        if (imported.type === 'char' && imported.charName) {
+            var cn = imported.charName;
+            if (!dd.chars) dd.chars = {};
+            if (!dd.charNames) dd.charNames = [];
+            var srcO = (imported.outfits || []).map(function (o) { return Object.assign({}, o, { id: genId() }); });
+            var srcC = imported.categories || [];
+            if (mode === 'replace') {
+                dd.chars[cn] = { outfits: srcO, categories: srcC, activeIds: [] };
+            } else {
+                var cd = getCharData(dd, cn);
+                srcO.forEach(function (o) { cd.outfits.push(o); });
+                srcC.forEach(function (c) { if (cd.categories.indexOf(c) === -1) cd.categories.push(c); });
+            }
+            if (dd.charNames.indexOf(cn) === -1) dd.charNames.push(cn);
+            save(dd); fn.renderViewbar(); fn.renderCatbar(); fn.renderGrid(); fn.renderBottomStatus();
+            toast('✅ 已导入角色「' + cn + '」（' + srcO.length + '套穿搭）');
+            return;
+        }
+
+        if (imported.type === 'chars_all' && imported.chars) {
+            if (!dd.chars) dd.chars = {};
+            if (!dd.charNames) dd.charNames = [];
+            var importedNames = imported.charNames || Object.keys(imported.chars);
+            var totalOutfits = 0;
+            importedNames.forEach(function (cn) {
+                var src = imported.chars[cn]; if (!src) return;
+                var srcO2 = (src.outfits || []).map(function (o) { return Object.assign({}, o, { id: genId() }); });
+                var srcC2 = src.categories || [];
+                if (mode === 'replace') {
+                    dd.chars[cn] = { outfits: srcO2, categories: srcC2, activeIds: [] };
+                } else {
+                    var cd2 = getCharData(dd, cn);
+                    srcO2.forEach(function (o) { cd2.outfits.push(o); });
+                    srcC2.forEach(function (c) { if (cd2.categories.indexOf(c) === -1) cd2.categories.push(c); });
+                }
+                if (dd.charNames.indexOf(cn) === -1) dd.charNames.push(cn);
+                totalOutfits += srcO2.length;
+            });
+            save(dd); fn.renderViewbar(); fn.renderCatbar(); fn.renderGrid(); fn.renderBottomStatus();
+            toast('✅ 已导入 ' + importedNames.length + ' 个角色（共 ' + totalOutfits + ' 套穿搭）');
+            return;
+        }
+
+        var srcOutfits = imported.outfits || [], srcCats = imported.categories || [], srcPresets = imported.presets || [];
+        if (mode === 'replace') {
+            dd.outfits = srcOutfits.map(function (o) { return Object.assign({}, o, { id: genId() }); });
+            dd.categories = srcCats.slice(); dd.activeIds = [];
+        } else {
+            srcOutfits.forEach(function (o) { dd.outfits.push(Object.assign({}, o, { id: genId() })); });
+            srcCats.forEach(function (c) { if (dd.categories.indexOf(c) === -1) dd.categories.push(c); });
+            if (srcPresets.length > 0) {
+                if (!Array.isArray(dd.presets)) dd.presets = [];
+                srcPresets.forEach(function (p2) { if (p2) dd.presets.push(Object.assign({}, p2, { id: genId() })); });
+            }
+        }
+
+        if (imported.chars) {
+            if (!dd.chars) dd.chars = {};
+            if (!dd.charNames) dd.charNames = [];
+            var impNames = imported.charNames || Object.keys(imported.chars);
+            impNames.forEach(function (cn) {
+                var src2 = imported.chars[cn]; if (!src2) return;
+                dd.chars[cn] = {
+                    outfits: (src2.outfits || []).map(function (o) { return Object.assign({}, o, { id: genId() }); }),
+                    categories: src2.categories || [],
+                    activeIds: []
+                };
+                if (dd.charNames.indexOf(cn) === -1) dd.charNames.push(cn);
+            });
+        }
+
+        save(dd); fn.renderViewbar(); fn.renderCatbar(); fn.renderGrid(); fn.renderBottomStatus(); fn.updateBtn();
+        toast('✅ 导入成功：' + dd.outfits.length + ' 套穿搭');
+    } catch (err) { toast('导入处理失败：' + err.message, true); }
+}
+
+// ── 批量导入弹窗 ─────────────────────────────────────────
+function openBatchImportModal(files) {
+    var d = load();
+    var curCat = (state.curCat && state.curCat !== '__all__') ? state.curCat : '';
+    var viewCats = getViewCategories(d);
+    var catOpts = '<option value="">无分类</option>' +
+        viewCats.map(function (c) { return '<option value="' + esc(c) + '"' + (c === curCat ? ' selected' : '') + '>' + esc(c) + '</option>'; }).join('');
+    var hasApi = !!(d.apiVision.endpoint && d.apiVision.key && d.apiVision.model);
+
+    var modal = document.createElement('div');
+    modal.className = 'om-modal';
+    modal.style.setProperty('z-index', '2147483647', 'important');
+    modal.innerHTML = '<div class="om-modal-box" style="background:' + (state.darkMode ? '#1e1e24' : '#ececef') + ';color:' + (state.darkMode ? '#eee' : '#111') + ';max-height:80vh">' +
+        '<div class="om-modal-title"><i class="fa-solid fa-images" style="margin-right:6px;color:var(--SmartThemeQuoteColor,#7c6daf)"></i>批量导入穿搭</div>' +
+        '<div style="font-size:.82em;opacity:.7;margin-bottom:8px">已选择 ' + files.length + ' 张图片，将自动压缩</div>' +
+        '<div style="display:flex;gap:6px;flex-wrap:wrap;max-height:120px;overflow-y:auto;margin-bottom:10px" id="om-bimport-preview"></div>' +
+        '<div class="om-field" style="margin-bottom:8px"><label style="font-size:.82em;font-weight:600">导入到分类</label><select id="om-bimport-cat" style="background:rgba(127,127,127,.08);border:1px solid rgba(127,127,127,.2);border-radius:8px;color:inherit;padding:7px 10px;font-size:.85em;width:100%;box-sizing:border-box;font-family:inherit">' + catOpts + '</select></div>' +
+        (hasApi ? '<label style="display:flex;align-items:center;gap:6px;font-size:.82em;cursor:pointer;margin-bottom:10px"><input type="checkbox" id="om-bimport-ai" checked /> 导入后自动 AI 生成描述和名称</label>' : '<div style="font-size:.78em;opacity:.4;margin-bottom:10px">💡 配置"描述生成 API"后可自动生成描述和名称</div>') +
+        '<div id="om-bimport-status" style="display:none;margin:8px 0;font-size:.82em"></div>' +
+        '<div class="om-btn-row" style="margin-top:6px" id="om-bimport-actions">' +
+        '<button class="om-btn om-btn-safe" id="om-bimport-start"><i class="fa-solid fa-file-import"></i> 开始导入</button>' +
+        '<button class="om-btn om-btn-outline" id="om-bimport-close">取消</button></div></div>';
+
+    var _mp = getPopupLayer();
+    modal.style.cssText = 'position:absolute !important;inset:0 !important;z-index:1 !important;background:rgba(0,0,0,.45) !important;display:flex !important;align-items:center !important;justify-content:center !important;padding:20px !important;box-sizing:border-box !important;pointer-events:auto !important;';
+    _mp.appendChild(modal);
+    modal.addEventListener('click', function (e) { if (e.target === modal && !modal.dataset.running) _mp.removeChild(modal); });
+    modal.querySelector('#om-bimport-close').addEventListener('click', function () { if (!modal.dataset.running) _mp.removeChild(modal); });
+
+    var previewEl = modal.querySelector('#om-bimport-preview');
+    files.forEach(function (f) {
+        var thumb = document.createElement('div');
+        thumb.style.cssText = 'width:52px;height:52px;border-radius:6px;overflow:hidden;background:rgba(127,127,127,.1);flex-shrink:0;';
+        var reader = new FileReader();
+        reader.onload = function (e) {
+            thumb.innerHTML = '<img src="' + e.target.result + '" style="width:100%;height:100%;object-fit:cover" />';
+        };
+        reader.readAsDataURL(f);
+        previewEl.appendChild(thumb);
+    });
+
+    modal.querySelector('#om-bimport-start').addEventListener('click', function () {
+        modal.dataset.running = '1';
+        modal.querySelector('#om-bimport-start').disabled = true;
+        modal.querySelector('#om-bimport-start').textContent = '导入中...';
+        modal.querySelector('#om-bimport-close').textContent = '请等待...';
+        var statusEl = modal.querySelector('#om-bimport-status');
+        statusEl.style.display = 'block';
+
+        var cat = modal.querySelector('#om-bimport-cat').value;
+        var useAI = hasApi && modal.querySelector('#om-bimport-ai') && modal.querySelector('#om-bimport-ai').checked;
+        var imported = 0;
+        var newIds = [];
+
+        function compressNext(i) {
+            if (i >= files.length) {
+                delete modal.dataset.running;
+                statusEl.innerHTML = '<div style="color:#4caf50;font-weight:600">✅ 已导入 ' + imported + ' 套穿搭</div>';
+                var actionsEl = modal.querySelector('#om-bimport-actions');
+                if (useAI && newIds.length > 0) {
+                    actionsEl.innerHTML = '<button class="om-btn om-btn-safe" id="om-bimport-ai-go"><i class="fa-solid fa-wand-magic-sparkles"></i> AI 生成描述</button><button class="om-btn om-btn-outline" id="om-bimport-done">跳过</button>';
+                    modal.querySelector('#om-bimport-ai-go').addEventListener('click', function () {
+                        _mp.removeChild(modal);
+                        fn.renderCatbar(); fn.renderGrid(); fn.renderBottomStatus();
+                        openBatchDescModal(newIds);
+                    });
+                    modal.querySelector('#om-bimport-done').addEventListener('click', function () {
+                        _mp.removeChild(modal);
+                        fn.renderCatbar(); fn.renderGrid(); fn.renderBottomStatus(); fn.updateBtn();
+                    });
+                } else {
+                    actionsEl.innerHTML = '<button class="om-btn om-btn-safe" id="om-bimport-done">完成</button>';
+                    modal.querySelector('#om-bimport-done').addEventListener('click', function () {
+                        _mp.removeChild(modal);
+                        fn.renderCatbar(); fn.renderGrid(); fn.renderBottomStatus(); fn.updateBtn();
+                    });
+                }
+                return;
+            }
+            statusEl.textContent = '压缩中... ' + (i + 1) + '/' + files.length;
+            var reader = new FileReader();
+            reader.onload = function (e) {
+                compressImage(e.target.result, function (compressed) {
+                    var dd = load();
+                    var id = genId();
+                    var newOutfit = {
+                        id: id,
+                        name: '穿搭' + (i + 1),
+                        category: cat,
+                        description: '',
+                        sceneTag: '',
+                        imageData: compressed,
+                        createdAt: Date.now()
+                    };
+                    if (dd.currentView === 'char' && dd.currentChar) {
+                        getCharData(dd, dd.currentChar).outfits.push(newOutfit);
+                    } else {
+                        dd.outfits.push(newOutfit);
+                    }
+                    save(dd);
+                    newIds.push(id);
+                    imported++;
+                    compressNext(i + 1);
+                });
+            };
+            reader.onerror = function () { compressNext(i + 1); };
+            reader.readAsDataURL(files[i]);
+        }
+        compressNext(0);
+    });
+}
+
+// ── 批量 AI 生成描述弹窗 ──────────────────────────────────
+function openBatchDescModal(ids) {
+    var d = load();
+    var withImg = ids.filter(function (id) { var o = getById(d, id); return o && o.imageData; });
+    var skipCount = ids.length - withImg.length;
+    var willSkipDesc = withImg.filter(function (id) { var o = getById(d, id); return o && o.description && o.description.trim() && !d.apiVision.overwrite; }).length;
+    var modal = document.createElement('div');
+    modal.className = 'om-modal';
+    modal.style.setProperty('z-index', '2147483647', 'important');
+    modal.innerHTML = '<div class="om-modal-box" style="background:' + (state.darkMode ? '#1e1e24' : '#ececef') + ';color:' + (state.darkMode ? '#eee' : '#111') + '">' +
+        '<div class="om-modal-title"><i class="fa-solid fa-wand-magic-sparkles" style="margin-right:6px;color:var(--SmartThemeQuoteColor,#7c6daf)"></i>AI 批量生成</div>' +
+        '<div style="font-size:.82em;opacity:.7;margin-bottom:8px">' +
+        '共选中 ' + ids.length + ' 套，其中 ' + withImg.length + ' 套有图片' +
+        (skipCount > 0 ? '，' + skipCount + ' 套无图片将跳过' : '') +
+        (willSkipDesc > 0 ? '<br>' + willSkipDesc + ' 套已有描述将跳过（可在设置中开启覆盖）' : '') +
+        '</div>' +
+        '<div style="font-size:.78em;opacity:.5;margin-bottom:8px">共需 ' + (withImg.length - willSkipDesc) + ' 次 API 调用</div>' +
+        '<div style="border:1px solid rgba(127,127,127,.12);border-radius:8px;padding:10px;margin-bottom:8px">' +
+        '<label style="display:flex;align-items:center;gap:6px;font-size:.82em;cursor:pointer"><input type="checkbox" id="om-batch-autoname" checked /> 同时生成穿搭名称（覆盖现有名称）</label>' +
+        '</div>' +
+        '<div id="om-batch-progress" style="display:none;margin:10px 0">' +
+        '<div style="font-size:.82em;margin-bottom:6px" id="om-batch-prog-text">准备中...</div>' +
+        '<div style="height:6px;background:rgba(127,127,127,.15);border-radius:3px;overflow:hidden">' +
+        '<div id="om-batch-prog-bar" style="height:100%;width:0%;background:var(--SmartThemeQuoteColor,#7c6daf);border-radius:3px;transition:width .3s"></div></div></div>' +
+        '<div id="om-batch-result" style="display:none;margin:8px 0;font-size:.82em;max-height:120px;overflow-y:auto"></div>' +
+        '<div class="om-btn-row" style="margin-top:10px" id="om-batch-actions">' +
+        '<button class="om-btn om-btn-safe" id="om-batch-start"><i class="fa-solid fa-play"></i> 开始生成</button>' +
+        '<button class="om-btn om-btn-outline" id="om-batch-close">取消</button></div></div>';
+
+    var _mp = getPopupLayer();
+    modal.style.cssText = 'position:absolute !important;inset:0 !important;z-index:1 !important;background:rgba(0,0,0,.45) !important;display:flex !important;align-items:center !important;justify-content:center !important;padding:20px !important;box-sizing:border-box !important;pointer-events:auto !important;';
+    _mp.appendChild(modal);
+
+    var modalAlive = true;
+    function removeModal() { if (modalAlive && modal.parentNode) { modal.parentNode.removeChild(modal); modalAlive = false; } }
+
+    modal.addEventListener('click', function (e) { if (e.target === modal) removeModal(); });
+    modal.querySelector('#om-batch-close').addEventListener('click', function () { removeModal(); });
+
+    modal.querySelector('#om-batch-start').addEventListener('click', function () {
+        modal.querySelector('#om-batch-progress').style.display = 'block';
+        modal.querySelector('#om-batch-start').disabled = true;
+        modal.querySelector('#om-batch-start').textContent = '生成中...';
+        var closeBtn = modal.querySelector('#om-batch-close');
+        closeBtn.textContent = '后台运行';
+        closeBtn.onclick = function () {
+            removeModal();
+            toast('👗 AI 生成中，可继续使用酒馆，完成后会通知');
+        };
+
+        var options = {
+            autoName: modal.querySelector('#om-batch-autoname').checked
+        };
+
+        batchGenerateDescriptions(ids, options,
+            function (done, total, msg) {
+                var pct = total > 0 ? Math.round(done / total * 100) : 0;
+                if (modalAlive) {
+                    var bar = modal.querySelector('#om-batch-prog-bar');
+                    var txt = modal.querySelector('#om-batch-prog-text');
+                    if (bar) bar.style.width = pct + '%';
+                    if (txt) txt.textContent = done + '/' + total + ' ' + msg;
+                }
+            },
+            function (err, doneCount, errors) {
+                var successCount = (doneCount || 0) - (errors ? errors.length : 0);
+                var failCount = errors ? errors.length : 0;
+
+                if (modalAlive) {
+                    var bar = modal.querySelector('#om-batch-prog-bar');
+                    if (bar) bar.style.width = '100%';
+                    var resultEl = modal.querySelector('#om-batch-result');
+                    resultEl.style.display = 'block';
+                    if (err && !doneCount) {
+                        resultEl.innerHTML = '<div style="color:#e57373"><i class="fa-solid fa-circle-exclamation"></i> ' + esc(err) + '</div>';
+                    } else {
+                        var html2 = '<div style="color:#4caf50;font-weight:600">✅ 成功生成 ' + successCount + ' 条</div>';
+                        if (failCount > 0) {
+                            html2 += '<div style="color:#ff8c42;margin-top:4px">⚠️ ' + failCount + ' 个失败：</div>';
+                            errors.forEach(function (e) {
+                                html2 += '<div style="opacity:.6;font-size:.9em;margin-left:8px">· ' + esc(e.name) + '：' + esc(e.error) + '</div>';
+                            });
+                        }
+                        resultEl.innerHTML = html2;
+                    }
+                    var actionsEl = modal.querySelector('#om-batch-actions');
+                    actionsEl.innerHTML = '<button class="om-btn om-btn-safe" id="om-batch-done">完成</button>';
+                    modal.querySelector('#om-batch-done').addEventListener('click', function () {
+                        removeModal();
+                        fn.renderGrid();
+                    });
+                } else {
+                    if (failCount > 0) {
+                        toast('👗 AI 生成完成：' + successCount + ' 成功，' + failCount + ' 失败');
+                    } else {
+                        toast('👗 AI 生成完成：' + successCount + ' 条描述已就绪');
+                    }
+                    fn.renderGrid();
+                }
+            }
+        );
+    });
+}
+
+// ── 导出 ──────────────────────────────────────────────────
+export { openBatchDescModal, openBatchTagPanel, openBatchImportModal };
+export { exportData, importData, processImport };
+
+export function registerBatchFn() {
+    fn.openBatchDescModal = openBatchDescModal;
+    fn.openBatchTagPanel = openBatchTagPanel;
+    fn.openBatchImportModal = openBatchImportModal;
+    fn.exportData = exportData;
+    fn.importData = importData;
+}

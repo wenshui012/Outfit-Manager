@@ -33,7 +33,7 @@ export function def() {
         multiImagePrompt: '以上图片为可选穿搭，根据场景标签匹配，场景转换则切换穿搭，禁止编造其他服装。严禁集中罗列，细节分散融入动作和互动中。',
         debug: false,
         // API
-        apiVision: { endpoint: '', key: '', model: '', concurrency: 3, prompt: '请用中文详细描述这张穿搭图片中的服装。包括：服装类型、颜色、材质、款式细节、搭配方式等。只描述服装本身，不描述人物外貌。每套穿搭的描述控制在100-200字。', overwrite: false }
+        apiVision: { endpoint: '', key: '', model: '', prompt: '用JSON回复（不要代码块）：{"name":"穿搭名称6字以内","description":"描述服装类型颜色材质款式搭配，只写服装不写人，100-200字"}', overwrite: false }
     };
 }
 

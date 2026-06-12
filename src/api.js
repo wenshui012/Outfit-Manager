@@ -19,7 +19,7 @@ export function normalizeEndpoint(raw, path) {
 export function fetchModelList(apiCfg, cb) {
     var url = normalizeEndpoint(apiCfg.endpoint, '/v1/models');
     fetch(url, {
-        headers: { 'Authorization': 'Bearer ' + apiCfg.key }
+        headers: { 'Authorization': 'Bearer ' + apiCfg.key, 'X-OM-Internal': '1' }
     }).then(function (r) {
         if (!r.ok) return r.text().then(function (t) { throw new Error('HTTP ' + r.status); });
         return r.json();
@@ -79,6 +79,39 @@ export function openModelPicker(apiCfg, onSelect) {
     });
 }
 
+// ── 解析 AI 返回的 JSON（容错：处理 markdown 代码块、提取 JSON）
+function parseAIResponse(raw) {
+    if (!raw || !raw.trim()) return null;
+    var s = raw.trim();
+    // 去掉 markdown 代码块
+    s = s.replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/i, '').trim();
+    // 尝试直接解析
+    try { var obj = JSON.parse(s); if (obj && typeof obj === 'object') return cleanParsed(obj); } catch (e) {}
+    // 尝试提取第一个 { ... }
+    var m = s.match(/\{[\s\S]*\}/);
+    if (m) { try { var obj2 = JSON.parse(m[0]); if (obj2 && typeof obj2 === 'object') return cleanParsed(obj2); } catch (e2) {} }
+    // JSON 解析全部失败：尝试把首行当 name，其余当 description
+    var lines = s.split(/\n+/).filter(function (l) { return l.trim(); });
+    if (lines.length >= 2 && lines[0].length <= 20) {
+        return { name: lines[0].trim(), description: lines.slice(1).join('\n').trim() };
+    }
+    return null;
+}
+
+// 清理 AI 返回的 JSON：如果 description 开头就是 name，去掉重复
+function cleanParsed(obj) {
+    if (obj.name && obj.description) {
+        var n = obj.name.trim();
+        var d = obj.description.trim();
+        // description 开头是 name（可能后面跟换行、逗号、句号、冒号等）
+        if (d.indexOf(n) === 0) {
+            d = d.slice(n.length).replace(/^[\s,，.。:：\-—\n]+/, '').trim();
+            if (d) obj.description = d;
+        }
+    }
+    return obj;
+}
+
 // ── 单次 Vision API 调用 ─────────────────────────────────
 export function callVisionAPI(apiCfg, image, systemPrompt, cb) {
     var url = normalizeEndpoint(apiCfg.endpoint, '/v1/chat/completions');
@@ -92,11 +125,11 @@ export function callVisionAPI(apiCfg, image, systemPrompt, cb) {
                 { type: 'text', text: systemPrompt || '请描述图中服装' }
             ]
         }],
-        max_tokens: 1024
+        max_tokens: 4096
     };
     fetch(url, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + apiCfg.key },
+        headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + apiCfg.key, 'X-OM-Internal': '1' },
         body: JSON.stringify(body)
     }).then(function (r) {
         if (!r.ok) return r.text().then(function (t) { throw new Error('HTTP ' + r.status + ': ' + t.slice(0, 200)); });
@@ -117,11 +150,10 @@ export function callVisionAPI(apiCfg, image, systemPrompt, cb) {
     }).catch(function (e) { cb(e.message || String(e)); });
 }
 
-// ── 批量生成描述 ─────────────────────────────────────────
-export function batchGenerateDescriptions(outfitIds, progressCb, doneCb) {
+// ── 批量生成描述（并发队列）─────────────────────────────
+export function batchGenerateDescriptions(outfitIds, options, progressCb, doneCb) {
     var d = load();
     var apiCfg = d.apiVision;
-    var concurrency = Math.max(1, Math.min(5, apiCfg.concurrency || 3));
     var queue = [];
     outfitIds.forEach(function (id) {
         var o = getById(d, id);
@@ -132,21 +164,35 @@ export function batchGenerateDescriptions(outfitIds, progressCb, doneCb) {
     if (queue.length === 0) { doneCb(null, 0, []); return; }
     var done = 0, errors = [], running = 0, idx = 0;
     var total = queue.length;
+    var concurrency = 3;
+    var prompt = apiCfg.prompt;
 
     function processNext() {
         while (running < concurrency && idx < queue.length) {
             (function (item) {
                 running++;
-                callVisionAPI(apiCfg, item, apiCfg.prompt, function (err, text) {
+                callVisionAPI(apiCfg, item, prompt, function (err, text) {
                     running--;
                     done++;
-                    if (err) { errors.push({ name: item.name, error: err }); }
-                    else {
-                        var dd = load();
-                        var o = getById(dd, item.id);
-                        if (o) { o.description = text; save(dd); }
+                    if (err) {
+                        errors.push({ name: item.name, error: err });
+                    } else if (!text || !text.trim()) {
+                        errors.push({ name: item.name, error: 'API 返回了空内容' });
+                    } else {
+                        var parsed = parseAIResponse(text);
+                        var o = getById(load(), item.id);
+                        if (!o) { errors.push({ name: item.name, error: '未找到穿搭数据' }); }
+                        else {
+                            if (parsed && parsed.description) {
+                                o.description = parsed.description;
+                                if (options.autoName && parsed.name && parsed.name.trim()) o.name = parsed.name.trim();
+                            } else {
+                                o.description = text;
+                            }
+                            save(load());
+                        }
                     }
-                    if (progressCb) progressCb(done, total, err ? '❌ ' + item.name : '✅ ' + item.name);
+                    if (progressCb) progressCb(done, total, errors.length > 0 && errors[errors.length - 1].name === item.name ? '❌ ' + item.name : '✅ ' + item.name);
                     if (done >= total) { doneCb(null, done, errors); }
                     else { processNext(); }
                 });
@@ -157,14 +203,19 @@ export function batchGenerateDescriptions(outfitIds, progressCb, doneCb) {
     processNext();
 }
 
-// ── 单套描述生成 ─────────────────────────────────────────
+// ── 单套描述生成（返回结构化数据）───────────────────────
 export function generateSingleDescription(outfit, cb) {
     var d = load();
     var apiCfg = d.apiVision;
     if (!apiCfg.endpoint || !apiCfg.key || !apiCfg.model) { cb('请先在设置中配置描述API'); return; }
     if (!outfit.imageData) { cb('该穿搭没有图片'); return; }
     callVisionAPI(apiCfg, { name: outfit.name, dataUrl: outfit.imageData }, apiCfg.prompt, function (err, text) {
-        if (err) cb(err);
-        else cb(null, text);
+        if (err) { cb(err); return; }
+        var parsed = parseAIResponse(text);
+        if (parsed && parsed.description) {
+            cb(null, { name: parsed.name || '', description: parsed.description });
+        } else {
+            cb(null, { name: '', description: text });
+        }
     });
 }

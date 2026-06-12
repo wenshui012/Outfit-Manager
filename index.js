@@ -1,5 +1,5 @@
 // ══════════════════════════════════════════════════════════
-// 穿搭管理器 Outfit Manager 正式版v1.5.0
+// 穿搭管理器 Outfit Manager 正式版v1.6.0
 // by 温水 & 克洛宜
 // ══════════════════════════════════════════════════════════
 
@@ -9,12 +9,15 @@ import { ensureDefaults } from './src/data.js';
 import { setupInjection } from './src/inject.js';
 import { state, fn } from './src/bridge.js';
 import { registerMainFn } from './src/ui-main.js';
-import { registerSheetsFn } from './src/ui-sheets.js';
+import { registerSheetsFn, createSheet, closeSheet, getAllTagSuggestions } from './src/ui-sheets.js';
+import { registerBatchFn, initBatchDeps } from './src/ui-batch.js';
 import { FAB_ID, injectFab, updateBtn, injectBtn, registerFabFn } from './src/ui-fab.js';
 
 // ── 注册跨模块函数 ─────────────────────────────────────
 registerMainFn();
 registerSheetsFn();
+initBatchDeps(createSheet, closeSheet, getAllTagSuggestions);
+registerBatchFn();
 registerFabFn();
 
 // ── 启动 ──────────────────────────────────────────────────

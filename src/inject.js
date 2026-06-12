@@ -194,6 +194,10 @@ export function setupInjection() {
     var origFetch = window.fetch;
     window.fetch = function (input, init) {
         try {
+            // 跳过插件内部的 API 调用
+            if (init && init.headers && init.headers['X-OM-Internal']) {
+                return origFetch.apply(this, arguments);
+            }
             if (init && init.body && typeof init.body === 'string') {
                 var nb = tryInjectBody(init.body);
                 if (nb) { init = Object.assign({}, init, { body: nb }); return origFetch.call(this, input, init); }
