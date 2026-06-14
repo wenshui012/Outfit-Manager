@@ -1,11 +1,45 @@
 // ── 穿搭管理器 · 主界面 ──────────────────────────────────
 // 全屏弹窗、视角切换、分类栏、穿搭网格、底栏状态、详情面板
 
-import { load, save } from './db.js';
+import { load, save, isServerMode, resolveImageForExternal, getImageUrlPrefix } from './db.js';
 import { getCharData, getViewOutfits, getViewCategories, getViewActiveIds, setViewActiveIds, getById, getViewById, isActive } from './data.js';
 import { genId, esc, toast, getPopupLayer } from './utils.js';
 import { injectStyles } from './styles.js';
 import { state, fn } from './bridge.js';
+
+// ── 预解析活跃穿搭图片（server模式下）──────────────────
+function preResolveActiveImages() {
+    if (!isServerMode()) return;
+    var d = load();
+    var prefix = getImageUrlPrefix();
+
+    function resolveForOwner(outfits, activeIds) {
+        if (!Array.isArray(outfits) || !Array.isArray(activeIds)) return;
+        activeIds.forEach(function (id) {
+            for (var i = 0; i < outfits.length; i++) {
+                var o = outfits[i];
+                if (o.id === id && o.imageData && typeof o.imageData === 'string' && o.imageData.indexOf(prefix) === 0) {
+                    // 检查是否已缓存且 URL 没变
+                    if (state.resolvedImages[o.id] && state.resolvedImages[o.id].url === o.imageData) break;
+                    (function (outfit) {
+                        resolveImageForExternal(outfit.imageData, function (dataUrl) {
+                            state.resolvedImages[outfit.id] = { url: outfit.imageData, dataUrl: dataUrl };
+                        });
+                    })(o);
+                    break;
+                }
+            }
+        });
+    }
+
+    resolveForOwner(d.outfits, d.activeIds);
+    if (d.chars) {
+        for (var cn in d.chars) {
+            var cd = d.chars[cn];
+            resolveForOwner(cd.outfits || [], cd.activeIds || []);
+        }
+    }
+}
 
 var SCRIPT_NAME = '穿搭管理';
 
@@ -586,7 +620,7 @@ function renderGrid() {
                 if (idx !== -1) aids.splice(idx, 1); else aids.push(id);
                 setViewActiveIds(dd, aids);
                 save(dd); fn.updateBtn(); renderBottomStatus();
-
+                preResolveActiveImages();
 
                 save(dd); fn.updateBtn(); renderBottomStatus();
                 // 更新卡片样式
@@ -722,6 +756,7 @@ function openDetailPanel(groups, d) {
             var ai1 = (dd.activeIds || []).indexOf(id); if (ai1 !== -1) dd.activeIds.splice(ai1, 1);
             if (dd.chars) { for (var cn in dd.chars) { var cai = (dd.chars[cn].activeIds || []).indexOf(id); if (cai !== -1) dd.chars[cn].activeIds.splice(cai, 1); } }
             save(dd); fn.updateBtn(); renderBottomStatus(); renderGrid();
+            preResolveActiveImages();
             closeDetailPanel();
         });
     });
@@ -747,7 +782,7 @@ function closeDetailPanel() {
 
 
 // ── 注册到共享桥 ─────────────────────────────────────────
-export { openPopup, closePopup, renderGrid, renderCatbar, renderViewbar, renderBottomStatus };
+export { openPopup, closePopup, renderGrid, renderCatbar, renderViewbar, renderBottomStatus, preResolveActiveImages };
 
 export function registerMainFn() {
     fn.openPopup = openPopup;
@@ -757,4 +792,5 @@ export function registerMainFn() {
     fn.renderViewbar = renderViewbar;
     fn.renderBottomStatus = renderBottomStatus;
     fn.closeDetailPanel = closeDetailPanel;
+    fn.preResolveActiveImages = preResolveActiveImages;
 }

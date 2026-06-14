@@ -1,7 +1,7 @@
 // ── 穿搭管理器 · 悬浮球 & 侧栏按钮 ─────────────────────
 // FAB 拖拽悬浮球 + 扩展菜单侧栏按钮
 
-import { load } from './db.js';
+import { load, save } from './db.js';
 import { getById } from './data.js';
 import { esc, compressImage } from './utils.js';
 import { fn } from './bridge.js';
@@ -23,8 +23,17 @@ function injectFab() {
     function posFab() {
         var vh = window.innerHeight || document.documentElement.clientHeight;
         var vw = window.innerWidth || document.documentElement.clientWidth;
-        var mainTop = vh - 80 - MAIN_SIZE; var mainLeft = vw - 16 - MAIN_SIZE;
-        if (mainTop < 10) mainTop = 10; if (mainLeft < 10) mainLeft = 10;
+        var dd = load();
+        var mainTop, mainLeft;
+        if (dd.fabPos && typeof dd.fabPos.top === 'number' && typeof dd.fabPos.left === 'number') {
+            // 使用保存的位置，但约束在屏幕内
+            mainTop = Math.max(0, Math.min(dd.fabPos.top, vh - MAIN_SIZE));
+            mainLeft = Math.max(0, Math.min(dd.fabPos.left, vw - MAIN_SIZE));
+        } else {
+            // 默认位置：右下角
+            mainTop = vh - 80 - MAIN_SIZE; mainLeft = vw - 16 - MAIN_SIZE;
+            if (mainTop < 10) mainTop = 10; if (mainLeft < 10) mainLeft = 10;
+        }
         container.setAttribute('style',
             'position:fixed !important;top:' + mainTop + 'px !important;left:' + mainLeft + 'px !important;' +
             'z-index:2147483647 !important;display:flex !important;align-items:center !important;' +
@@ -78,9 +87,14 @@ function injectFab() {
     mainBtn.addEventListener('touchend', function (e) {
         if (!_dragState.moved) {
             _dragState.handled = true;
-            e.preventDefault(); // 阻止后续 click 事件
-            // 延迟打开，等触摸事件完全结束
+            e.preventDefault();
             setTimeout(function () { fn.openPopup(); }, 50);
+        } else {
+            // 拖拽结束：保存位置
+            var rect = container.getBoundingClientRect();
+            var dd = load();
+            dd.fabPos = { top: Math.round(rect.top), left: Math.round(rect.left) };
+            save(dd);
         }
     });
     // PC端点击

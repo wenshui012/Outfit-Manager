@@ -1,7 +1,7 @@
 // ── 穿搭管理器 · 弹出面板 ──────────────────────────────────
 // 操作菜单、编辑面板、预设、设置、分类管理、Lightbox、导入导出、批量描述
 
-import { load, save } from './db.js';
+import { load, save, isServerMode } from './db.js';
 import { def, getCharData, getViewOutfits, getViewCategories, getViewActiveIds, setViewActiveIds, getById, getViewById, isActive } from './data.js';
 import { genId, esc, toast, getPopupLayer, compressImage } from './utils.js';
 import { generateSingleDescription, batchGenerateDescriptions, openModelPicker, normalizeEndpoint } from './api.js';
@@ -33,6 +33,7 @@ function openContextMenu(outfit, imgOutfits) {
         if (idx !== -1) aids.splice(idx, 1); else aids.push(outfit.id);
         setViewActiveIds(dd, aids);
         save(dd); fn.updateBtn(); fn.renderBottomStatus(); fn.renderGrid();
+        if (fn.preResolveActiveImages) fn.preResolveActiveImages();
         fn.closeDetailPanel();
     });
 
@@ -609,7 +610,7 @@ function openSettingsSheet() {
 
         '<div class="om-divider"></div>',
         '<div class="om-sec-title">数据</div>',
-        '<div class="om-storage-info">' + d.outfits.length + ' 套穿搭 / ' + imgCount + ' 张图片 / ' + (d.presets ? d.presets.length : 0) + ' 个预设 | IndexedDB 存储</div>',
+        '<div class="om-storage-info">' + d.outfits.length + ' 套穿搭 / ' + imgCount + ' 张图片 / ' + (d.presets ? d.presets.length : 0) + ' 个预设 | ' + (isServerMode() ? '服务器存储' : 'IndexedDB 存储') + '</div>',
         '<div class="om-btn-row" style="margin-top:8px">',
         '<button class="om-btn om-btn-outline" id="om-exp"><i class="fa-solid fa-download"></i> 导出</button>',
         '<button class="om-btn om-btn-outline" id="om-imp"><i class="fa-solid fa-upload"></i> 导入</button>',
@@ -657,7 +658,7 @@ function openSettingsSheet() {
         var dd = load();
         if (!dd.apiVision.endpoint || !dd.apiVision.key || !dd.apiVision.model) { toast('请先填写 API 地址、Key 和模型名称', true); return; }
         toast('正在测试...');
-        fetch(normalizeEndpoint(dd.apiVision.endpoint, 'chat'), {
+        fetch(normalizeEndpoint(dd.apiVision.endpoint, '/v1/chat/completions'), {
             method: 'POST',
             headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + dd.apiVision.key },
             body: JSON.stringify({ model: dd.apiVision.model, messages: [{ role: 'user', content: '回复OK' }], max_tokens: 10 })

@@ -10,7 +10,8 @@ export var state = {
     searchOpen: false,
     searchQuery: '',
     detailOpen: false,
-    collapsedGroups: {}
+    collapsedGroups: {},
+    resolvedImages: {}   // server模式下预解析的图片缓存 { outfitId: { url, dataUrl } }
 };
 
 // 函数注册表：各模块把自己的函数注册进来，其他模块通过 fn.xxx() 调用

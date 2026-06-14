@@ -1,7 +1,7 @@
 // ── 穿搭管理器 · 批量操作与导入导出 ──────────────────────
 // 批量标签、批量导入、批量AI生成、数据导出导入
 
-import { load, save } from './db.js';
+import { load, save, isServerMode, batchResolveImages, uploadImage, getImageUrlPrefix } from './db.js';
 import { getCharData, getViewOutfits, getViewCategories, getById } from './data.js';
 import { genId, esc, toast, getPopupLayer, compressImage } from './utils.js';
 import { batchGenerateDescriptions } from './api.js';
@@ -98,7 +98,7 @@ function openBatchTagPanel(selectedIds, onDone) {
 }
 
 // ── 导出 ──────────────────────────────────────────────────
-function doExport(data, filename) {
+function doExportFile(data, filename) {
     try {
         var blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
         var url = URL.createObjectURL(blob);
@@ -106,6 +106,60 @@ function doExport(data, filename) {
         a.href = url; a.download = filename; document.body.appendChild(a); a.click();
         setTimeout(function () { document.body.removeChild(a); URL.revokeObjectURL(url); }, 500);
     } catch (e) { toast('导出失败：' + e.message, true); }
+}
+
+// 收集数据中所有后端图片 URL
+function collectImageUrls(data) {
+    var urls = [];
+    var prefix = getImageUrlPrefix();
+    function scanOutfits(outfits) {
+        if (!Array.isArray(outfits)) return;
+        outfits.forEach(function (o) {
+            if (o && typeof o.imageData === 'string' && o.imageData.indexOf(prefix) === 0) {
+                urls.push(o.imageData);
+            }
+        });
+    }
+    scanOutfits(data.outfits);
+    if (data.chars) {
+        for (var cn in data.chars) { scanOutfits((data.chars[cn] || {}).outfits); }
+    }
+    if (Array.isArray(data.presets)) {
+        data.presets.forEach(function (p) { if (p) scanOutfits(p.outfits); });
+    }
+    if (typeof data.fabImage === 'string' && data.fabImage.indexOf(prefix) === 0) {
+        urls.push(data.fabImage);
+    }
+    return urls;
+}
+
+function doExport(data, filename) {
+    if (!isServerMode()) {
+        doExportFile(data, filename);
+        return;
+    }
+    // Server 模式：收集图片 URL → 批量取 base64 → 附加 _assets
+    var urls = collectImageUrls(data);
+    if (urls.length === 0) {
+        doExportFile(data, filename);
+        return;
+    }
+    toast('📦 正在打包图片…');
+    batchResolveImages(urls, function (imageMap) {
+        var assets = {};
+        var prefix = getImageUrlPrefix();
+        for (var url in imageMap) {
+            var dataUrl = imageMap[url];
+            if (dataUrl && dataUrl.indexOf('data:image/') === 0) {
+                var name = url.replace(prefix, '');
+                if (name && !assets[name]) assets[name] = dataUrl;
+            }
+        }
+        var exportData = JSON.parse(JSON.stringify(data));
+        if (Object.keys(assets).length > 0) exportData._assets = assets;
+        doExportFile(exportData, filename);
+        toast('✅ 导出完成（含 ' + Object.keys(assets).length + ' 张图片）');
+    });
 }
 
 function exportData() {
@@ -192,12 +246,84 @@ function importData() {
         var file = fileInp.files[0]; if (!file) return;
         var reader = new FileReader();
         reader.onload = function (e) {
-            try { var imported = JSON.parse(e.target.result); _mp2.removeChild(modal); processImport(imported, importMode); }
+            try {
+                var imported = JSON.parse(e.target.result);
+                _mp2.removeChild(modal);
+                if (imported._assets) {
+                    resolveImportAssets(imported, function () {
+                        processImport(imported, importMode);
+                    });
+                } else {
+                    processImport(imported, importMode);
+                }
+            }
             catch (err) { toast('文件解析失败，请确认是有效的 JSON 文件', true); }
         };
         reader.onerror = function () { toast('文件读取失败', true); };
         reader.readAsText(file, 'utf-8');
     });
+}
+
+// ── _assets 处理（导入时）─────────────────────────────────
+function resolveImportAssets(imported, cb) {
+    var assets = imported._assets;
+    if (!assets || typeof assets !== 'object') { cb(); return; }
+    var prefix = getImageUrlPrefix();
+
+    function replaceInOutfits(outfits, urlMap) {
+        if (!Array.isArray(outfits)) return;
+        outfits.forEach(function (o) {
+            if (!o || typeof o.imageData !== 'string') return;
+            if (o.imageData.indexOf(prefix) === 0) {
+                var name = o.imageData.replace(prefix, '');
+                if (urlMap[name]) o.imageData = urlMap[name];
+            }
+        });
+    }
+
+    function replaceAll(data, urlMap) {
+        replaceInOutfits(data.outfits, urlMap);
+        if (data.chars) {
+            for (var cn in data.chars) { replaceInOutfits((data.chars[cn] || {}).outfits, urlMap); }
+        }
+        if (Array.isArray(data.presets)) {
+            data.presets.forEach(function (p) { if (p) replaceInOutfits(p.outfits, urlMap); });
+        }
+        if (typeof data.fabImage === 'string' && data.fabImage.indexOf(prefix) === 0) {
+            var fabName = data.fabImage.replace(prefix, '');
+            if (urlMap[fabName]) data.fabImage = urlMap[fabName];
+        }
+    }
+
+    if (isServerMode()) {
+        // 后端可用：上传 _assets 中的图片，用新 URL 替换引用
+        var names = Object.keys(assets);
+        var urlMap = {};
+        var done = 0;
+        if (names.length === 0) { delete imported._assets; cb(); return; }
+        toast('📦 正在上传图片（0/' + names.length + '）…');
+        names.forEach(function (name) {
+            uploadImage(assets[name], function (_err, newUrl) {
+                urlMap[name] = newUrl;
+                done++;
+                if (done % 5 === 0 || done === names.length) {
+                    toast('📦 正在上传图片（' + done + '/' + names.length + '）…');
+                }
+                if (done >= names.length) {
+                    replaceAll(imported, urlMap);
+                    delete imported._assets;
+                    cb();
+                }
+            });
+        });
+    } else {
+        // 后端不可用：用 _assets 中的 base64 还原 URL 引用
+        var urlMap2 = {};
+        for (var name in assets) { urlMap2[name] = assets[name]; }
+        replaceAll(imported, urlMap2);
+        delete imported._assets;
+        cb();
+    }
 }
 
 function processImport(imported, mode) {

@@ -4,6 +4,20 @@
 import { load } from './db.js';
 import { getById } from './data.js';
 import { toast } from './utils.js';
+import { state } from './bridge.js';
+
+// 获取注入用的图片URL（server模式下优先用预解析的base64）
+function getInjectImageUrl(outfit) {
+    if (!outfit || !outfit.imageData) return null;
+    // 检查预解析缓存
+    if (state.resolvedImages && state.resolvedImages[outfit.id]) {
+        var cached = state.resolvedImages[outfit.id];
+        if (cached.dataUrl && cached.url === outfit.imageData) {
+            return cached.dataUrl;
+        }
+    }
+    return outfit.imageData;
+}
 
 // ── 文本注入 ─────────────────────────────────────────────
 // position: 'system' | 'context' | 'user'
@@ -77,12 +91,12 @@ function injectImageBlocks(p, ownerImageGroups, imgPrompt, multiImgPrompt) {
                     c.push({ type: 'text', text: '\n[' + grp.name + '的可选穿搭 - 共' + grp.outfits.length + '套]' });
                     grp.outfits.forEach(function (o, i) {
                         c.push({ type: 'text', text: '\n(' + (i + 1) + ') ' + o.name + (o.sceneTag ? ' [场景：' + o.sceneTag + ']' : '') + '：' });
-                        c.push({ type: 'image_url', image_url: { url: o.imageData } });
+                        c.push({ type: 'image_url', image_url: { url: getInjectImageUrl(o) } });
                     });
                 } else {
                     var o = grp.outfits[0];
                     c.push({ type: 'text', text: '\n[' + grp.name + '当前穿着]' });
-                    c.push({ type: 'image_url', image_url: { url: o.imageData } });
+                    c.push({ type: 'image_url', image_url: { url: getInjectImageUrl(o) } });
                 }
             });
 
