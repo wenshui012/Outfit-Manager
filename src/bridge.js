@@ -5,6 +5,8 @@
 export var state = {
     darkMode: false,
     curCat: '__all__',
+    curSubCat: null,        // 当前子分类筛选，null=全部（在父分类下）
+    catDrillParent: null,   // 分类下钻的父分类名，null=在顶级
     batchMode: false,
     batchSelected: [],
     searchOpen: false,

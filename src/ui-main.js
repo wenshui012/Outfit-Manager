@@ -2,7 +2,7 @@
 // 全屏弹窗、视角切换、分类栏、穿搭网格、底栏状态、详情面板
 
 import { load, save, isServerMode, resolveImageForExternal, getImageUrlPrefix } from './db.js';
-import { getCharData, getViewOutfits, getViewCategories, getViewActiveIds, setViewActiveIds, getById, getViewById, isActive } from './data.js';
+import { getCharData, getViewOutfits, getViewCategories, getViewActiveIds, setViewActiveIds, getById, getViewById, isActive, getCatNames, getSubCats, hasSubCats, findCatObj } from './data.js';
 import { genId, esc, toast, getPopupLayer } from './utils.js';
 import { injectStyles } from './styles.js';
 import { state, fn } from './bridge.js';
@@ -64,6 +64,7 @@ function openPopup() {
 
     injectStyles();
     state.batchMode = false; state.batchSelected = []; state.searchQuery = ''; state.searchOpen = false; detailPanelOpen = false;
+    state.catDrillParent = null; state.curSubCat = null;
 
     var ov = document.createElement('div');
     ov.className = 'om-overlay ' + (state.darkMode ? 'om-dark' : 'om-light');
@@ -182,6 +183,7 @@ function renderViewbar() {
             dd.currentView = tab.dataset.v;
             save(dd);
             charPanelExpanded = false;
+            state.curCat = '__all__'; state.catDrillParent = null; state.curSubCat = null;
             renderViewbar(); renderCatbar(); renderGrid(); renderBottomStatus();
         });
     });
@@ -282,6 +284,7 @@ function renderCharDropdown(vbar, d, query) {
             if (e.target.closest('.om-char-star') || e.target.closest('.om-char-actions')) return;
             var dd = load(); dd.currentChar = row.dataset.cn; save(dd);
             charPanelExpanded = false;
+            state.curCat = '__all__'; state.catDrillParent = null; state.curSubCat = null;
             renderViewbar(); renderCatbar(); renderGrid(); renderBottomStatus();
         });
     });
@@ -382,16 +385,69 @@ function renderCatbar() {
     var catbar = document.getElementById('om-catbar'); if (!catbar) return;
     var d = load();
     var cats = getViewCategories(d);
-    if (cats.length === 0) { catbar.style.display = 'none'; return; }
+    var catNames = getCatNames(cats);
+    if (catNames.length === 0) { catbar.style.display = 'none'; state.catDrillParent = null; state.curSubCat = null; state.curCat = '__all__'; return; }
     catbar.style.display = '';
-    var html = '<button class="om-catbtn' + (state.curCat === '__all__' ? ' on' : '') + '" data-c="__all__">全部</button>';
-    cats.forEach(function (c) {
-        html += '<button class="om-catbtn' + (state.curCat === c ? ' on' : '') + '" data-c="' + esc(c) + '">' + esc(c) + '</button>';
-    });
+
+    var html = '';
+
+    if (state.catDrillParent) {
+        // ── 子分类级别 ──
+        var subCats = getSubCats(cats, state.catDrillParent);
+        // 返回箭头
+        html += '<button class="om-catbtn om-catbtn-back" id="om-cat-back" title="返回上级"><i class="fa-solid fa-chevron-left"></i></button>';
+        // 父分类名本身 = "全部"功能（高亮时表示未筛选子分类）
+        html += '<button class="om-catbtn' + (state.curSubCat === null ? ' on' : '') + '" data-sub="__all__">' + esc(state.catDrillParent) + '</button>';
+        // 子分类按钮
+        subCats.forEach(function (sc) {
+            html += '<button class="om-catbtn' + (state.curSubCat === sc ? ' on' : '') + '" data-sub="' + esc(sc) + '">' + esc(sc) + '</button>';
+        });
+    } else {
+        // ── 顶级分类 ──
+        html += '<button class="om-catbtn' + (state.curCat === '__all__' ? ' on' : '') + '" data-c="__all__">全部</button>';
+        catNames.forEach(function (c) {
+            html += '<button class="om-catbtn' + (state.curCat === c ? ' on' : '') + '" data-c="' + esc(c) + '">' + esc(c) + '</button>';
+        });
+    }
+
     catbar.innerHTML = html;
-    catbar.querySelectorAll('.om-catbtn').forEach(function (btn) {
-        btn.addEventListener('click', function () { state.curCat = btn.dataset.c; renderCatbar(); renderGrid(); });
-    });
+
+    if (state.catDrillParent) {
+        // 子分类级别事件
+        catbar.querySelector('#om-cat-back').addEventListener('click', function () {
+            state.catDrillParent = null; state.curSubCat = null; state.curCat = '__all__';
+            renderCatbar(); renderGrid();
+        });
+        catbar.querySelectorAll('.om-catbtn[data-sub]').forEach(function (btn) {
+            btn.addEventListener('click', function () {
+                var sub = btn.dataset.sub;
+                if (sub === '__all__') state.curSubCat = null;
+                else state.curSubCat = sub;
+                renderCatbar(); renderGrid();
+            });
+        });
+    } else {
+        // 顶级分类事件
+        catbar.querySelectorAll('.om-catbtn[data-c]').forEach(function (btn) {
+            btn.addEventListener('click', function () {
+                var c = btn.dataset.c;
+                if (c === '__all__') {
+                    state.curCat = '__all__'; state.catDrillParent = null; state.curSubCat = null;
+                    renderCatbar(); renderGrid();
+                } else {
+                    // 有子分类则下钻，无子分类则直接筛选
+                    if (hasSubCats(cats, c)) {
+                        state.catDrillParent = c; state.curCat = c; state.curSubCat = null;
+                        renderCatbar(); renderGrid();
+                    } else {
+                        state.curCat = c; state.catDrillParent = null; state.curSubCat = null;
+                        renderCatbar(); renderGrid();
+                    }
+                }
+            });
+        });
+    }
+
     // ★ 电脑端支持：鼠标滚轮横向滚动 + 鼠标拖拽滚动
     if (!catbar._wheelBound) {
         catbar.addEventListener('wheel', function (e) {
@@ -430,8 +486,25 @@ function renderGrid() {
     // 当前视角的穿搭
     var allOutfits = getViewOutfits(d);
 
-    // 按分类过滤
-    var list = state.curCat === '__all__' ? allOutfits : allOutfits.filter(function (o) { return o.category === state.curCat; });
+    // 按分类过滤（支持子分类下钻）
+    var list;
+    if (state.catDrillParent) {
+        // 在子分类下钻模式
+        var parentCat = state.catDrillParent;
+        // 先筛出属于该父分类的 outfit
+        var inParent = allOutfits.filter(function (o) { return o.category === parentCat; });
+        if (state.curSubCat === null) {
+            // 父分类名高亮 = 显示该父分类下所有
+            list = inParent;
+        } else {
+            // 特定子分类
+            list = inParent.filter(function (o) { return o.subCategory === state.curSubCat; });
+        }
+    } else if (state.curCat === '__all__') {
+        list = allOutfits;
+    } else {
+        list = allOutfits.filter(function (o) { return o.category === state.curCat; });
+    }
     if (state.searchQuery) {
         var q = state.searchQuery.toLowerCase();
         list = list.filter(function (o) {
@@ -454,6 +527,7 @@ function renderGrid() {
             '<button class="om-batch-btn" id="om-batch-selall">全选</button>' +
             '<button class="om-batch-btn" id="om-batch-none">取消</button>' +
             '<button class="om-batch-btn" id="om-batch-cat"><i class="fa-solid fa-folder"></i> 分类</button>' +
+            '<button class="om-batch-btn" id="om-batch-move"><i class="fa-solid fa-arrow-right-arrow-left"></i> 移动</button>' +
             '<button class="om-batch-btn" id="om-batch-tag"><i class="fa-solid fa-tag"></i> 标签</button>' +
             '<button class="om-batch-btn" id="om-batch-aidesc"><i class="fa-solid fa-wand-magic-sparkles"></i> AI描述</button>' +
             '<button class="om-batch-btn danger" id="om-batch-del"><i class="fa-solid fa-trash"></i> 删除</button>' +
@@ -480,7 +554,7 @@ function renderGrid() {
 
             var imgContent = '';
             if (o.imageData) {
-                imgContent = '<img src="' + o.imageData + '" alt="' + esc(o.name) + '" />';
+                imgContent = '<img src="' + o.imageData + '" alt="' + esc(o.name) + '" loading="lazy" />';
             } else {
                 var descPreview = (o.description && o.description.trim()) ? o.description.trim() : '';
                 imgContent = '<div class="om-card-noimg">' +
@@ -509,7 +583,11 @@ function renderGrid() {
 
     // 添加卡点击
     var ac = area.querySelector('#om-addcard');
-    if (ac) ac.addEventListener('click', function () { fn.openEditSheet(null, state.curCat !== '__all__' ? state.curCat : ''); });
+    if (ac) ac.addEventListener('click', function () {
+        var defCat = state.catDrillParent || (state.curCat !== '__all__' ? state.curCat : '');
+        var defSub = state.catDrillParent && state.curSubCat ? state.curSubCat : '';
+        fn.openEditSheet(null, defCat, defSub);
+    });
 
     // 批量操作
     if (state.batchMode) {
@@ -525,26 +603,42 @@ function renderGrid() {
             if (state.batchSelected.length === 0) { toast('请先选择穿搭', true); return; }
             var dd = load();
             var cats = getViewCategories(dd);
-            if (cats.length === 0) { toast('还没有分类，请先在设置中添加', true); return; }
-            // 自定义分类选择面板
+            var catNames = getCatNames(cats);
+            if (catNames.length === 0) { toast('还没有分类，请先在设置中添加', true); return; }
+            // 自定义分类选择面板（含子分类）
+            var itemsHtml = '';
+            cats.forEach(function (catObj) {
+                var catName = typeof catObj === 'object' ? catObj.name : catObj;
+                var children = typeof catObj === 'object' ? (catObj.children || []) : [];
+                var n = getViewOutfits(dd).filter(function (o) { return o.category === catName; }).length;
+                itemsHtml += '<div class="om-cat-item om-bcat-pick" data-cat="' + esc(catName) + '" data-sub="" style="cursor:pointer;font-weight:600"><span class="om-cat-name">' + esc(catName) + '</span><span class="om-cat-count">' + n + '套</span></div>';
+                children.forEach(function (sc) {
+                    var sn = getViewOutfits(dd).filter(function (o) { return o.category === catName && o.subCategory === sc; }).length;
+                    itemsHtml += '<div class="om-cat-item om-bcat-pick" data-cat="' + esc(catName) + '" data-sub="' + esc(sc) + '" style="cursor:pointer;padding-left:28px;opacity:.85"><span class="om-cat-name"><i class="fa-solid fa-turn-up fa-rotate-90" style="font-size:.6em;opacity:.3;margin-right:6px"></i>' + esc(sc) + '</span><span class="om-cat-count">' + sn + '套</span></div>';
+                });
+            });
             var catSheet = fn.createSheet([
                 '<div class="om-sheet-title"><i class="fa-solid fa-folder"></i>选择分类</div>',
                 '<div class="om-hint" style="margin-bottom:10px">为已选 ' + state.batchSelected.length + ' 套穿搭设置分类</div>',
-                cats.map(function (cat) {
-                    var n = getViewOutfits(dd).filter(function (o) { return o.category === cat; }).length;
-                    return '<div class="om-cat-item om-bcat-pick" data-cat="' + esc(cat) + '" style="cursor:pointer"><span class="om-cat-name">' + esc(cat) + '</span><span class="om-cat-count">' + n + '套</span></div>';
-                }).join(''),
+                itemsHtml,
                 '<div class="om-divider"></div>',
-                '<div class="om-cat-item om-bcat-pick" data-cat="" style="cursor:pointer;opacity:.6"><span class="om-cat-name">清除分类</span></div>',
+                '<div class="om-cat-item om-bcat-pick" data-cat="" data-sub="" style="cursor:pointer;opacity:.6"><span class="om-cat-name">清除分类</span></div>',
             ].join(''));
             catSheet.querySelectorAll('.om-bcat-pick').forEach(function (item) {
                 item.addEventListener('click', function () {
                     var targetCat = item.dataset.cat;
+                    var targetSub = item.dataset.sub;
                     var dd2 = load();
                     var viewOutfits = getViewOutfits(dd2);
-                    viewOutfits.forEach(function (o) { if (state.batchSelected.indexOf(o.id) !== -1) o.category = targetCat; });
+                    viewOutfits.forEach(function (o) {
+                        if (state.batchSelected.indexOf(o.id) !== -1) {
+                            o.category = targetCat;
+                            o.subCategory = targetSub || '';
+                        }
+                    });
                     save(dd2); fn.closeSheet(catSheet);
-                    toast('✅ 已将 ' + state.batchSelected.length + ' 套' + (targetCat ? '移到「' + targetCat + '」' : '清除分类'));
+                    var label = targetCat ? (targetSub ? '「' + targetCat + ' > ' + targetSub + '」' : '「' + targetCat + '」') : '清除分类';
+                    toast('✅ 已将 ' + state.batchSelected.length + ' 套' + (targetCat ? '移到' + label : label));
                     state.batchSelected = []; renderGrid();
                 });
             });
@@ -554,6 +648,14 @@ function renderGrid() {
             // 复用标签管理面板，选择后批量设置
             fn.openBatchTagPanel(state.batchSelected.slice(), function () {
                 state.batchSelected = []; renderGrid();
+            });
+        });
+        var bmoveBtn = area.querySelector('#om-batch-move');
+        if (bmoveBtn) bmoveBtn.addEventListener('click', function () {
+            if (state.batchSelected.length === 0) { toast('请先选择穿搭', true); return; }
+            fn.openMoveToPanel(state.batchSelected.slice(), function () {
+                state.batchSelected = []; state.batchMode = false;
+                fn.renderViewbar(); fn.renderCatbar(); renderGrid(); fn.renderBottomStatus(); fn.updateBtn();
             });
         });
         if (bdelBtn) bdelBtn.addEventListener('click', function () {
@@ -621,8 +723,6 @@ function renderGrid() {
                 setViewActiveIds(dd, aids);
                 save(dd); fn.updateBtn(); renderBottomStatus();
                 preResolveActiveImages();
-
-                save(dd); fn.updateBtn(); renderBottomStatus();
                 // 更新卡片样式
                 card.classList.toggle('on', isActive(dd, id));
                 var badge = card.querySelector('.om-badge-on');

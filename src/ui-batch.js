@@ -2,7 +2,7 @@
 // 批量标签、批量导入、批量AI生成、数据导出导入
 
 import { load, save, isServerMode, batchResolveImages, uploadImage, getImageUrlPrefix } from './db.js';
-import { getCharData, getViewOutfits, getViewCategories, getById } from './data.js';
+import { getCharData, getViewOutfits, getViewCategories, getById, getCatNames, getSubCats } from './data.js';
 import { genId, esc, toast, getPopupLayer, compressImage } from './utils.js';
 import { batchGenerateDescriptions } from './api.js';
 import { state, fn } from './bridge.js';
@@ -627,14 +627,211 @@ function openBatchDescModal(ids) {
     });
 }
 
+// ── 移动到… 面板 ─────────────────────────────────────────
+// selectedIds: 要移动的 outfit id 数组
+// onDone: 完成后回调
+function openMoveToPanel(selectedIds, onDone) {
+    var d = load();
+    var count = selectedIds.length;
+    var isCharView = d.currentView === 'char' && d.currentChar;
+    var currentLabel = isCharView ? d.currentChar : 'User';
+
+    // ── 第一步：选目标位置 ──
+    var destHtml = '<div class="om-sheet-title"><i class="fa-solid fa-arrow-right-arrow-left"></i>移动到…</div>';
+    destHtml += '<div class="om-hint" style="margin-bottom:10px">将 ' + count + ' 套穿搭移动到目标位置<br><span style="opacity:.6;font-size:.9em">当前：' + esc(currentLabel) + '</span></div>';
+
+    // User 衣柜（如果当前不是user则显示）
+    if (isCharView) {
+        destHtml += '<div class="om-cat-item om-move-dest" data-type="user" style="cursor:pointer"><i class="fa-solid fa-user" style="opacity:.5;width:20px;text-align:center;margin-right:4px"></i><span class="om-cat-name" style="font-weight:600">User 衣柜</span></div>';
+    }
+
+    // 角色衣柜列表（排除当前角色）
+    var charNames = d.charNames || [];
+    charNames.forEach(function (cn) {
+        if (isCharView && cn === d.currentChar) return; // 跳过当前角色
+        destHtml += '<div class="om-cat-item om-move-dest" data-type="char" data-char="' + esc(cn) + '" style="cursor:pointer"><i class="fa-solid fa-masks-theater" style="opacity:.5;width:20px;text-align:center;margin-right:4px"></i><span class="om-cat-name">' + esc(cn) + '</span></div>';
+    });
+
+    // 如果当前是user，显示user自己的分类选项（在同视角内移分类）
+    if (!isCharView) {
+        destHtml += '<div class="om-cat-item om-move-dest" data-type="user" style="cursor:pointer"><i class="fa-solid fa-user" style="opacity:.5;width:20px;text-align:center;margin-right:4px"></i><span class="om-cat-name" style="font-weight:600">User 衣柜（改分类）</span></div>';
+    }
+    // 当前角色自己（改分类）
+    if (isCharView) {
+        destHtml += '<div class="om-cat-item om-move-dest" data-type="char" data-char="' + esc(d.currentChar) + '" style="cursor:pointer"><i class="fa-solid fa-masks-theater" style="opacity:.5;width:20px;text-align:center;margin-right:4px"></i><span class="om-cat-name">' + esc(d.currentChar) + '（改分类）</span></div>';
+    }
+
+    // 预设列表（复制）
+    if (Array.isArray(d.presets) && d.presets.length > 0) {
+        destHtml += '<div class="om-divider"></div>';
+        destHtml += '<div class="om-hint" style="margin-bottom:6px"><i class="fa-solid fa-copy" style="margin-right:4px"></i>复制到预设</div>';
+        d.presets.forEach(function (p, pi) {
+            if (!p) return;
+            destHtml += '<div class="om-cat-item om-move-dest" data-type="preset" data-pidx="' + pi + '" style="cursor:pointer"><i class="fa-solid fa-bookmark" style="opacity:.5;width:20px;text-align:center;margin-right:4px"></i><span class="om-cat-name">' + esc(p.name || '预设' + (pi + 1)) + '</span><span class="om-cat-count">' + (p.outfits ? p.outfits.length : 0) + '套</span></div>';
+        });
+    }
+
+    var sheet1 = createSheet(destHtml);
+
+    sheet1.querySelectorAll('.om-move-dest').forEach(function (item) {
+        item.addEventListener('click', function () {
+            var type = item.dataset.type;
+            var charName = item.dataset.char || '';
+            var presetIdx = item.dataset.pidx !== undefined ? parseInt(item.dataset.pidx) : -1;
+            closeSheet(sheet1);
+
+            if (type === 'preset') {
+                // 复制到预设 → 直接选分类
+                openMoveCatPicker(selectedIds, type, '', presetIdx, onDone);
+            } else {
+                // user 或 char → 选分类/子分类
+                openMoveCatPicker(selectedIds, type, charName, -1, onDone);
+            }
+        });
+    });
+}
+
+// ── 第二步：选目标分类+子分类 ──
+function openMoveCatPicker(selectedIds, targetType, targetChar, presetIdx, onDone) {
+    var d = load();
+    var count = selectedIds.length;
+    var isCurrentView = false;
+
+    // 获取目标位置的分类列表
+    var targetCats;
+    var targetLabel;
+    if (targetType === 'preset') {
+        var p = d.presets[presetIdx];
+        targetCats = (p && p.categories) || [];
+        targetLabel = p ? (p.name || '预设') : '预设';
+    } else if (targetType === 'char' && targetChar) {
+        var cd = getCharData(d, targetChar);
+        targetCats = cd.categories || [];
+        targetLabel = targetChar;
+        // 判断是否是当前视角（改分类而非移动）
+        if (d.currentView === 'char' && d.currentChar === targetChar) isCurrentView = true;
+    } else {
+        targetCats = d.categories || [];
+        targetLabel = 'User';
+        if (d.currentView === 'user' || !d.currentChar) isCurrentView = true;
+    }
+
+    var catNames = getCatNames(targetCats);
+    var actionWord = isCurrentView ? '更改分类' : (targetType === 'preset' ? '复制' : '移动');
+
+    var html = '<div class="om-sheet-title"><i class="fa-solid fa-folder"></i>选择目标分类</div>';
+    html += '<div class="om-hint" style="margin-bottom:10px">' + actionWord + ' ' + count + ' 套到「' + esc(targetLabel) + '」</div>';
+
+    // 无分类选项
+    html += '<div class="om-cat-item om-move-cat" data-cat="" data-sub="" style="cursor:pointer;opacity:.6"><span class="om-cat-name">不设分类</span></div>';
+
+    // 分类+子分类树
+    targetCats.forEach(function (catObj) {
+        var catName = typeof catObj === 'object' ? catObj.name : catObj;
+        var children = typeof catObj === 'object' ? (catObj.children || []) : [];
+        html += '<div class="om-cat-item om-move-cat" data-cat="' + esc(catName) + '" data-sub="" style="cursor:pointer;font-weight:600"><span class="om-cat-name">' + esc(catName) + '</span></div>';
+        children.forEach(function (sc) {
+            html += '<div class="om-cat-item om-move-cat" data-cat="' + esc(catName) + '" data-sub="' + esc(sc) + '" style="cursor:pointer;padding-left:28px;opacity:.85"><span class="om-cat-name"><i class="fa-solid fa-turn-up fa-rotate-90" style="font-size:.6em;opacity:.3;margin-right:6px"></i>' + esc(sc) + '</span></div>';
+        });
+    });
+
+    var sheet2 = createSheet(html);
+
+    sheet2.querySelectorAll('.om-move-cat').forEach(function (item) {
+        item.addEventListener('click', function () {
+            var targetCat = item.dataset.cat;
+            var targetSub = item.dataset.sub;
+            closeSheet(sheet2);
+            executeMove(selectedIds, targetType, targetChar, presetIdx, targetCat, targetSub, isCurrentView, onDone);
+        });
+    });
+}
+
+// ── 执行移动 ──
+function executeMove(selectedIds, targetType, targetChar, presetIdx, targetCat, targetSub, isCurrentView, onDone) {
+    var dd = load();
+    var count = selectedIds.length;
+
+    // 收集要移动的 outfit 对象
+    var sourceOutfits = [];
+    selectedIds.forEach(function (id) {
+        var o = getById(dd, id);
+        if (o) sourceOutfits.push(o);
+    });
+
+    if (sourceOutfits.length === 0) { toast('未找到穿搭', true); return; }
+
+    if (isCurrentView) {
+        // ── 同视角改分类 ──
+        sourceOutfits.forEach(function (o) {
+            o.category = targetCat;
+            o.subCategory = targetSub || '';
+        });
+        save(dd);
+        var catLabel = targetCat ? (targetSub ? '「' + targetCat + ' > ' + targetSub + '」' : '「' + targetCat + '」') : '无分类';
+        toast('✅ 已将 ' + count + ' 套更改为' + catLabel);
+    } else if (targetType === 'preset') {
+        // ── 复制到预设 ──
+        var p = dd.presets[presetIdx];
+        if (!p) { toast('预设不存在', true); return; }
+        if (!p.outfits) p.outfits = [];
+        sourceOutfits.forEach(function (o) {
+            var copy = JSON.parse(JSON.stringify(o));
+            copy.id = genId();
+            copy.category = targetCat;
+            copy.subCategory = targetSub || '';
+            p.outfits.push(copy);
+        });
+        save(dd);
+        toast('✅ 已复制 ' + count + ' 套到预设「' + (p.name || '预设') + '」');
+    } else {
+        // ── 跨视角移动（User↔Char / Char↔Char）──
+        // 1) 从源位置删除
+        // 从 user outfits 删
+        dd.outfits = dd.outfits.filter(function (o) { return selectedIds.indexOf(o.id) === -1; });
+        dd.activeIds = (dd.activeIds || []).filter(function (id) { return selectedIds.indexOf(id) === -1; });
+        // 从所有 chars 删
+        if (dd.chars) {
+            for (var cn in dd.chars) {
+                dd.chars[cn].outfits = (dd.chars[cn].outfits || []).filter(function (o) { return selectedIds.indexOf(o.id) === -1; });
+                dd.chars[cn].activeIds = (dd.chars[cn].activeIds || []).filter(function (id) { return selectedIds.indexOf(id) === -1; });
+            }
+        }
+
+        // 2) 插入目标位置
+        var targetOutfits;
+        if (targetType === 'char' && targetChar) {
+            var tcd = getCharData(dd, targetChar);
+            targetOutfits = tcd.outfits;
+            // 确保角色名在列表中
+            if (dd.charNames.indexOf(targetChar) === -1) dd.charNames.push(targetChar);
+        } else {
+            targetOutfits = dd.outfits;
+        }
+
+        sourceOutfits.forEach(function (o) {
+            o.category = targetCat;
+            o.subCategory = targetSub || '';
+            targetOutfits.push(o);
+        });
+
+        save(dd);
+        var destLabel = (targetType === 'char' && targetChar) ? targetChar : 'User';
+        toast('✅ 已移动 ' + count + ' 套到「' + destLabel + '」');
+    }
+
+    if (onDone) onDone();
+}
+
 // ── 导出 ──────────────────────────────────────────────────
-export { openBatchDescModal, openBatchTagPanel, openBatchImportModal };
+export { openBatchDescModal, openBatchTagPanel, openBatchImportModal, openMoveToPanel };
 export { exportData, importData, processImport };
 
 export function registerBatchFn() {
     fn.openBatchDescModal = openBatchDescModal;
     fn.openBatchTagPanel = openBatchTagPanel;
     fn.openBatchImportModal = openBatchImportModal;
+    fn.openMoveToPanel = openMoveToPanel;
     fn.exportData = exportData;
     fn.importData = importData;
 }

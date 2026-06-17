@@ -70,6 +70,31 @@ function migrateV17(d) {
     }
 }
 
+// ── 分类迁移：扁平数组 → 树形结构 ─────────────────────────
+function migrateCategories(cats) {
+    if (!Array.isArray(cats) || cats.length === 0) return cats;
+    // 已经是新格式
+    if (cats[0] && typeof cats[0] === 'object' && cats[0].name !== undefined) return cats;
+    // 旧格式：['夏装','春装'] → [{name:'夏装',children:[]}, ...]
+    return cats.map(function (c) { return { name: c, children: [] }; });
+}
+
+function migrateCategoriesInData(d) {
+    d.categories = migrateCategories(d.categories);
+    if (d.chars) {
+        for (var cn in d.chars) {
+            if (d.chars[cn].categories) {
+                d.chars[cn].categories = migrateCategories(d.chars[cn].categories);
+            }
+        }
+    }
+    if (Array.isArray(d.presets)) {
+        d.presets.forEach(function (p) {
+            if (p && p.categories) p.categories = migrateCategories(p.categories);
+        });
+    }
+}
+
 // ── 数据规范化 ─────────────────────────────────────────────
 export function ensureDefaults(d) {
     var dd = def();
@@ -89,7 +114,49 @@ export function ensureDefaults(d) {
         delete d.apiVision.batchSize;
     }
     migrateV17(d);
+    migrateCategoriesInData(d);
     return d;
+}
+
+// ── 分类辅助函数 ─────────────────────────────────────────
+// 获取父分类名列表（用于分类栏顶级渲染）
+export function getCatNames(cats) {
+    if (!Array.isArray(cats)) return [];
+    return cats.map(function (c) { return typeof c === 'object' ? c.name : c; });
+}
+
+// 获取某个父分类的子分类列表
+export function getSubCats(cats, parentName) {
+    if (!Array.isArray(cats)) return [];
+    for (var i = 0; i < cats.length; i++) {
+        var c = cats[i];
+        if (typeof c === 'object' && c.name === parentName) return c.children || [];
+    }
+    return [];
+}
+
+// 查找父分类对象
+export function findCatObj(cats, name) {
+    if (!Array.isArray(cats)) return null;
+    for (var i = 0; i < cats.length; i++) {
+        if (typeof cats[i] === 'object' && cats[i].name === name) return cats[i];
+    }
+    return null;
+}
+
+// 判断某个父分类是否有子分类
+export function hasSubCats(cats, parentName) {
+    return getSubCats(cats, parentName).length > 0;
+}
+
+// 判断 outfit 是否属于某个父分类（包括其所有子分类下的）
+export function outfitInCategory(o, catName) {
+    return o.category === catName;
+}
+
+// 判断 outfit 是否属于某个子分类
+export function outfitInSubCategory(o, catName, subCatName) {
+    return o.category === catName && o.subCategory === subCatName;
 }
 
 // ── Char数据访问辅助 ─────────────────────────────────────

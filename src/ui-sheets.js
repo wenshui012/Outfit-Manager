@@ -2,7 +2,7 @@
 // 操作菜单、编辑面板、预设、设置、分类管理、Lightbox、导入导出、批量描述
 
 import { load, save, isServerMode } from './db.js';
-import { def, getCharData, getViewOutfits, getViewCategories, getViewActiveIds, setViewActiveIds, getById, getViewById, isActive } from './data.js';
+import { def, getCharData, getViewOutfits, getViewCategories, getViewActiveIds, setViewActiveIds, getById, getViewById, isActive, getCatNames, getSubCats, findCatObj, hasSubCats } from './data.js';
 import { genId, esc, toast, getPopupLayer, compressImage } from './utils.js';
 import { generateSingleDescription, batchGenerateDescriptions, openModelPicker, normalizeEndpoint } from './api.js';
 import { state, fn } from './bridge.js';
@@ -20,6 +20,7 @@ function openContextMenu(outfit, imgOutfits) {
             : '<div class="om-ctx-item" id="om-ctx-wear"><i class="fa-solid fa-circle-check"></i>选择穿搭</div>',
         outfit.imageData ? '<div class="om-ctx-item" id="om-ctx-view"><i class="fa-solid fa-expand"></i>查看大图</div>' : '',
         '<div class="om-ctx-item" id="om-ctx-edit"><i class="fa-solid fa-pen"></i>编辑</div>',
+        '<div class="om-ctx-item" id="om-ctx-move"><i class="fa-solid fa-arrow-right-arrow-left"></i>移动到…</div>',
         outfit.imageData ? '<div class="om-ctx-item" id="om-ctx-aidesc"><i class="fa-solid fa-wand-magic-sparkles"></i>AI 生成描述</div>' : '',
         '<div class="om-ctx-item danger" id="om-ctx-del"><i class="fa-solid fa-trash"></i>删除</div>',
     ].join(''));
@@ -47,6 +48,15 @@ function openContextMenu(outfit, imgOutfits) {
     if (editEl) editEl.addEventListener('click', function () {
         closeSheet(sheet);
         openEditSheet(outfit, outfit.category || '');
+    });
+
+    var moveEl = sheet.querySelector('#om-ctx-move');
+    if (moveEl) moveEl.addEventListener('click', function () {
+        closeSheet(sheet);
+        fn.openMoveToPanel([outfit.id], function () {
+            fn.renderViewbar(); fn.renderCatbar(); fn.renderGrid(); fn.renderBottomStatus(); fn.updateBtn();
+            fn.closeDetailPanel();
+        });
     });
 
     var aidescEl = sheet.querySelector('#om-ctx-aidesc');
@@ -279,17 +289,27 @@ function openTagPanel(sceneInput) {
 }
 
 
-function openEditSheet(outfit, defaultCat) {
+function openEditSheet(outfit, defaultCat, defaultSubCat) {
     var d = load();
     var editImgData = outfit ? (outfit.imageData || null) : null;
     var viewCats = getViewCategories(d);
+    var catNames = getCatNames(viewCats);
     var catOpts = '<option value="">无分类</option>' +
-        viewCats.map(function (c) { return '<option value="' + esc(c) + '"' + (outfit && outfit.category === c ? ' selected' : '') + '>' + esc(c) + '</option>'; }).join('');
+        catNames.map(function (c) { return '<option value="' + esc(c) + '"' + (outfit && outfit.category === c ? ' selected' : '') + '>' + esc(c) + '</option>'; }).join('');
+
+    // 当前选中的父分类
+    var curParent = outfit ? (outfit.category || '') : (defaultCat || '');
+    var curSub = outfit ? (outfit.subCategory || '') : (defaultSubCat || '');
+    var subCats = curParent ? getSubCats(viewCats, curParent) : [];
+    var subDisplay = subCats.length > 0 ? '' : 'display:none;';
+    var subOpts = '<option value="">无子分类</option>' +
+        subCats.map(function (sc) { return '<option value="' + esc(sc) + '"' + (sc === curSub ? ' selected' : '') + '>' + esc(sc) + '</option>'; }).join('');
 
     var sheet = createSheet([
         '<div class="om-sheet-title"><i class="fa-solid fa-' + (outfit ? 'pen' : 'plus') + '"></i>' + (outfit ? '编辑穿搭' : '添加穿搭') + '</div>',
         '<div class="om-field"><label>穿搭名称 *</label><input type="text" id="om-dn" placeholder="如：白色蕾丝连衣裙" value="' + esc(outfit ? outfit.name : '') + '" /></div>',
         '<div class="om-field"><label>分类</label><div class="om-frow"><select id="om-dcat">' + catOpts + '</select><button class="om-btn om-btn-outline" id="om-dnewcat" style="white-space:nowrap;font-size:.8em;padding:7px 10px">+ 新建</button></div></div>',
+        '<div class="om-field" id="om-subcat-field" style="' + subDisplay + '"><label>子分类</label><div class="om-frow"><select id="om-dsubcat">' + subOpts + '</select><button class="om-btn om-btn-outline" id="om-dnewsubcat" style="white-space:nowrap;font-size:.8em;padding:7px 10px">+ 新建</button></div></div>',
         '<div class="om-field"><label>文字描述 <span class="om-hint">AI 注入用，越详细越好</span></label><textarea id="om-ddesc" rows="4" placeholder="如：白色蕾丝镂空连衣裙，领口略低，裙摆及膝……">' + esc(outfit ? outfit.description || '' : '') + '</textarea>' +
         '<button class="om-btn om-btn-outline" id="om-daidesc" style="font-size:.78em;margin-top:5px;align-self:flex-start"><i class="fa-solid fa-wand-magic-sparkles"></i> AI 生成描述</button></div>',
         '<div class="om-field"><label>场景标签 <span class="om-hint">多套时 AI 据此选穿搭，如：外出 / 家居 / 睡前</span></label>',
@@ -312,6 +332,28 @@ function openEditSheet(outfit, defaultCat) {
     if (defaultCat) {
         var sel = sheet.querySelector('#om-dcat'); if (sel) sel.value = defaultCat;
     }
+
+    // 父分类切换时联动子分类下拉
+    sheet.querySelector('#om-dcat').addEventListener('change', function () {
+        var parentVal = this.value;
+        var subField = sheet.querySelector('#om-subcat-field');
+        var subSel = sheet.querySelector('#om-dsubcat');
+        if (!parentVal) {
+            subField.style.display = 'none';
+            subSel.innerHTML = '<option value="">无子分类</option>';
+            return;
+        }
+        var dd = load();
+        var subs = getSubCats(getViewCategories(dd), parentVal);
+        if (subs.length === 0) {
+            subField.style.display = 'none';
+            subSel.innerHTML = '<option value="">无子分类</option>';
+        } else {
+            subField.style.display = '';
+            subSel.innerHTML = '<option value="">无子分类</option>' +
+                subs.map(function (sc) { return '<option value="' + esc(sc) + '">' + esc(sc) + '</option>'; }).join('');
+        }
+    });
 
     // 场景标签建议
     var sceneInput = sheet.querySelector('#om-dscene');
@@ -396,11 +438,35 @@ function openEditSheet(outfit, defaultCat) {
 
     sheet.querySelector('#om-dnewcat').addEventListener('click', function () {
         var name = prompt('新分类名称：'); if (!name || !name.trim()) return; name = name.trim();
-        var dd = load(); var vc = getViewCategories(dd); if (vc.indexOf(name) === -1) { vc.push(name); save(dd); fn.renderCatbar(); }
+        var dd = load(); var vc = getViewCategories(dd);
+        var names = getCatNames(vc);
+        if (names.indexOf(name) === -1) { vc.push({ name: name, children: [] }); save(dd); fn.renderCatbar(); }
         var sel = sheet.querySelector('#om-dcat'); var ex = false;
         for (var i = 0; i < sel.options.length; i++) { if (sel.options[i].value === name) { ex = true; break; } }
         if (!ex) { var opt = document.createElement('option'); opt.value = name; opt.textContent = name; sel.appendChild(opt); }
-        sel.value = name; toast('分类「' + name + '」已添加');
+        sel.value = name;
+        // 触发联动
+        sel.dispatchEvent(new Event('change'));
+        toast('分类「' + name + '」已添加');
+    });
+
+    // 新建子分类
+    sheet.querySelector('#om-dnewsubcat').addEventListener('click', function () {
+        var parentVal = sheet.querySelector('#om-dcat').value;
+        if (!parentVal) { toast('请先选择父分类', true); return; }
+        var scName = prompt('新子分类名称（属于「' + parentVal + '」）：'); if (!scName || !scName.trim()) return; scName = scName.trim();
+        var dd = load(); var vc = getViewCategories(dd);
+        var catObj = findCatObj(vc, parentVal);
+        if (catObj) {
+            if (!catObj.children) catObj.children = [];
+            if (catObj.children.indexOf(scName) === -1) { catObj.children.push(scName); save(dd); fn.renderCatbar(); }
+        }
+        var subSel = sheet.querySelector('#om-dsubcat'); var ex2 = false;
+        for (var j = 0; j < subSel.options.length; j++) { if (subSel.options[j].value === scName) { ex2 = true; break; } }
+        if (!ex2) { var opt2 = document.createElement('option'); opt2.value = scName; opt2.textContent = scName; subSel.appendChild(opt2); }
+        subSel.value = scName;
+        sheet.querySelector('#om-subcat-field').style.display = '';
+        toast('子分类「' + scName + '」已添加');
     });
 
     sheet.querySelector('#om-dcancel').addEventListener('click', function () { closeSheet(sheet); });
@@ -408,6 +474,7 @@ function openEditSheet(outfit, defaultCat) {
         var name = sheet.querySelector('#om-dn').value.trim();
         if (!name) { toast('请输入穿搭名称', true); return; }
         var cat = sheet.querySelector('#om-dcat').value;
+        var subCat = sheet.querySelector('#om-dsubcat').value;
         var desc = sheet.querySelector('#om-ddesc').value.trim();
         var scene = sheet.querySelector('#om-dscene').value.trim();
         var dd = load();
@@ -416,21 +483,21 @@ function openEditSheet(outfit, defaultCat) {
             var found = false;
             for (var i = 0; i < dd.outfits.length; i++) {
                 if (dd.outfits[i].id === outfit.id) {
-                    Object.assign(dd.outfits[i], { name: name, category: cat, description: desc, sceneTag: scene, imageData: editImgData }); found = true; break;
+                    Object.assign(dd.outfits[i], { name: name, category: cat, subCategory: subCat, description: desc, sceneTag: scene, imageData: editImgData }); found = true; break;
                 }
             }
             if (!found && dd.chars) {
                 for (var cn in dd.chars) {
                     var co = dd.chars[cn].outfits || [];
                     for (var j = 0; j < co.length; j++) {
-                        if (co[j].id === outfit.id) { Object.assign(co[j], { name: name, category: cat, description: desc, sceneTag: scene, imageData: editImgData }); found = true; break; }
+                        if (co[j].id === outfit.id) { Object.assign(co[j], { name: name, category: cat, subCategory: subCat, description: desc, sceneTag: scene, imageData: editImgData }); found = true; break; }
                     }
                     if (found) break;
                 }
             }
         } else {
             // 新增穿搭 - 放入当前视角
-            var newOutfit = { id: genId(), name: name, category: cat, description: desc, sceneTag: scene, imageData: editImgData, createdAt: Date.now() };
+            var newOutfit = { id: genId(), name: name, category: cat, subCategory: subCat, description: desc, sceneTag: scene, imageData: editImgData, createdAt: Date.now() };
             if (dd.currentView === 'char' && dd.currentChar) {
                 getCharData(dd, dd.currentChar).outfits.push(newOutfit);
             } else {
@@ -751,54 +818,196 @@ function openSettingsSheet() {
 function openCatsSheet() {
     var d = load();
     var cats = getViewCategories(d);
+    var catNames = getCatNames(cats);
     var viewOutfits = getViewOutfits(d);
     var viewLabel = d.currentView === 'char' && d.currentChar ? d.currentChar + '的' : 'User的';
-    var listHTML = cats.length === 0
-        ? '<div class="om-empty"><i class="fa-solid fa-tags"></i><span>还没有分类</span></div>'
-        : cats.map(function (cat, idx) {
-            var n = viewOutfits.filter(function (o) { return o.category === cat; }).length;
-            return '<div class="om-cat-item"><span class="om-cat-name">' + esc(cat) + '</span><span class="om-cat-count">' + n + '套</span>' +
+    // 折叠状态（面板内部管理，每次打开默认全部折叠）
+    var expanded = {};
+
+    function buildList() {
+        var listHTML = '';
+        if (catNames.length === 0) {
+            return '<div class="om-empty"><i class="fa-solid fa-tags"></i><span>还没有分类</span></div>';
+        }
+        cats.forEach(function (catObj, idx) {
+            var catName = typeof catObj === 'object' ? catObj.name : catObj;
+            var children = typeof catObj === 'object' ? (catObj.children || []) : [];
+            var n = viewOutfits.filter(function (o) { return o.category === catName; }).length;
+            var isExpanded = !!expanded[idx];
+            var chevron = children.length > 0
+                ? '<i class="fa-solid fa-chevron-' + (isExpanded ? 'down' : 'right') + ' om-cat-chevron"></i>'
+                : '<span class="om-cat-chevron-placeholder"></span>';
+            listHTML += '<div class="om-cat-item om-cat-parent" data-idx="' + idx + '">' +
+                chevron +
+                '<span class="om-cat-name" style="font-weight:600">' + esc(catName) + '</span><span class="om-cat-count">' + n + '套</span>' +
+                '<button class="om-btn-sm om-cat-addsub" data-idx="' + idx + '" title="添加子分类"><i class="fa-solid fa-plus"></i></button>' +
                 '<button class="om-btn-sm om-cat-ren" data-idx="' + idx + '" title="重命名"><i class="fa-solid fa-pen"></i></button>' +
                 '<button class="om-btn-sm om-cat-del" data-idx="' + idx + '" title="删除"><i class="fa-solid fa-trash"></i></button></div>';
-        }).join('');
+            // 子分类（仅展开时显示）
+            if (isExpanded) {
+                children.forEach(function (sc, si) {
+                    var sn = viewOutfits.filter(function (o) { return o.category === catName && o.subCategory === sc; }).length;
+                    listHTML += '<div class="om-cat-item om-cat-child" style="padding-left:32px;opacity:.85"><span class="om-cat-name"><i class="fa-solid fa-turn-up fa-rotate-90" style="font-size:.6em;opacity:.3;margin-right:6px"></i>' + esc(sc) + '</span><span class="om-cat-count">' + sn + '套</span>' +
+                        '<button class="om-btn-sm om-subcat-ren" data-pidx="' + idx + '" data-sidx="' + si + '" title="重命名"><i class="fa-solid fa-pen"></i></button>' +
+                        '<button class="om-btn-sm om-subcat-del" data-pidx="' + idx + '" data-sidx="' + si + '" title="删除"><i class="fa-solid fa-trash"></i></button></div>';
+                });
+            }
+        });
+        return listHTML;
+    }
 
     var sheet = createSheet([
         '<div class="om-sheet-title"><i class="fa-solid fa-tags"></i>' + esc(viewLabel) + '分类管理</div>',
-        listHTML,
+        '<div id="om-cats-list">' + buildList() + '</div>',
         '<div class="om-divider"></div>',
         '<div class="om-cat-add-row"><input type="text" id="om-newcat" placeholder="新分类名称…" /><button class="om-btn om-btn-safe" id="om-newadd">添加</button></div>',
     ].join(''));
+
+    function rebindEvents() {
+        var listEl = sheet.querySelector('#om-cats-list');
+        if (!listEl) return;
+        listEl.innerHTML = buildList();
+
+        // 点击父分类行折叠/展开
+        listEl.querySelectorAll('.om-cat-parent').forEach(function (row) {
+            row.addEventListener('click', function (e) {
+                // 不拦截按钮点击
+                if (e.target.closest('.om-btn-sm')) return;
+                var idx = parseInt(row.dataset.idx);
+                var catObj = cats[idx];
+                var children = typeof catObj === 'object' ? (catObj.children || []) : [];
+                if (children.length === 0) return; // 无子分类不响应
+                expanded[idx] = !expanded[idx];
+                rebindEvents();
+            });
+
+            // 有子分类的父行显示 pointer
+            var idx2 = parseInt(row.dataset.idx);
+            var catObj2 = cats[idx2];
+            var children2 = typeof catObj2 === 'object' ? (catObj2.children || []) : [];
+            if (children2.length > 0) row.style.cursor = 'pointer';
+        });
+
+        // 添加子分类
+        listEl.querySelectorAll('.om-cat-addsub').forEach(function (btn) {
+            btn.addEventListener('click', function (e) {
+                e.stopPropagation();
+                var dd = load(); var vc = getViewCategories(dd);
+                var idx = parseInt(btn.dataset.idx);
+                var catObj = vc[idx]; if (!catObj || typeof catObj !== 'object') return;
+                var scName = prompt('为「' + catObj.name + '」添加子分类：'); if (!scName || !scName.trim()) return; scName = scName.trim();
+                if (!catObj.children) catObj.children = [];
+                if (catObj.children.indexOf(scName) !== -1) { toast('子分类已存在', true); return; }
+                catObj.children.push(scName); save(dd); fn.renderCatbar();
+                // 更新本地引用并展开
+                cats = getViewCategories(load());
+                viewOutfits = getViewOutfits(load());
+                expanded[idx] = true;
+                rebindEvents();
+                toast('子分类「' + scName + '」已添加');
+            });
+        });
+
+        // 父分类重命名
+        listEl.querySelectorAll('.om-cat-ren').forEach(function (btn) {
+            btn.addEventListener('click', function (e) {
+                e.stopPropagation();
+                var dd = load(); var vc = getViewCategories(dd); var vo = getViewOutfits(dd);
+                var idx = parseInt(btn.dataset.idx);
+                var catObj = vc[idx]; if (!catObj) return;
+                var old = typeof catObj === 'object' ? catObj.name : catObj;
+                var nw = prompt('重命名（原：' + old + '）：', old); if (!nw || !nw.trim() || nw.trim() === old) return;
+                nw = nw.trim();
+                if (typeof catObj === 'object') catObj.name = nw; else vc[idx] = { name: nw, children: [] };
+                vo.forEach(function (o) { if (o.category === old) o.category = nw; });
+                save(dd); fn.renderCatbar();
+                cats = getViewCategories(load());
+                viewOutfits = getViewOutfits(load());
+                catNames = getCatNames(cats);
+                rebindEvents();
+                toast('已重命名');
+            });
+        });
+
+        // 父分类删除
+        listEl.querySelectorAll('.om-cat-del').forEach(function (btn) {
+            btn.addEventListener('click', function (e) {
+                e.stopPropagation();
+                var dd = load(); var vc = getViewCategories(dd); var vo = getViewOutfits(dd);
+                var idx = parseInt(btn.dataset.idx);
+                var catObj = vc[idx]; if (!catObj) return;
+                var catName = typeof catObj === 'object' ? catObj.name : catObj;
+                if (!confirm('删除分类「' + catName + '」及其所有子分类？（穿搭不会被删除）')) return;
+                vc.splice(idx, 1);
+                vo.forEach(function (o) { if (o.category === catName) { o.category = ''; o.subCategory = ''; } });
+                if (state.curCat === catName) { state.curCat = '__all__'; state.catDrillParent = null; state.curSubCat = null; }
+                save(dd); fn.renderCatbar();
+                cats = getViewCategories(load());
+                viewOutfits = getViewOutfits(load());
+                catNames = getCatNames(cats);
+                // 移除已删除索引的展开状态
+                delete expanded[idx];
+                rebindEvents();
+                toast('已删除');
+            });
+        });
+
+        // 子分类重命名
+        listEl.querySelectorAll('.om-subcat-ren').forEach(function (btn) {
+            btn.addEventListener('click', function (e) {
+                e.stopPropagation();
+                var dd = load(); var vc = getViewCategories(dd); var vo = getViewOutfits(dd);
+                var pidx = parseInt(btn.dataset.pidx); var sidx = parseInt(btn.dataset.sidx);
+                var catObj = vc[pidx]; if (!catObj || typeof catObj !== 'object') return;
+                var old = catObj.children[sidx];
+                var nw = prompt('重命名子分类（原：' + old + '）：', old); if (!nw || !nw.trim() || nw.trim() === old) return;
+                nw = nw.trim(); catObj.children[sidx] = nw;
+                vo.forEach(function (o) { if (o.category === catObj.name && o.subCategory === old) o.subCategory = nw; });
+                save(dd); fn.renderCatbar();
+                cats = getViewCategories(load());
+                viewOutfits = getViewOutfits(load());
+                rebindEvents();
+                toast('已重命名');
+            });
+        });
+
+        // 子分类删除
+        listEl.querySelectorAll('.om-subcat-del').forEach(function (btn) {
+            btn.addEventListener('click', function (e) {
+                e.stopPropagation();
+                var dd = load(); var vc = getViewCategories(dd); var vo = getViewOutfits(dd);
+                var pidx = parseInt(btn.dataset.pidx); var sidx = parseInt(btn.dataset.sidx);
+                var catObj = vc[pidx]; if (!catObj || typeof catObj !== 'object') return;
+                var scName = catObj.children[sidx];
+                if (!confirm('删除子分类「' + scName + '」？（穿搭不会被删除）')) return;
+                catObj.children.splice(sidx, 1);
+                vo.forEach(function (o) { if (o.category === catObj.name && o.subCategory === scName) o.subCategory = ''; });
+                save(dd); fn.renderCatbar();
+                cats = getViewCategories(load());
+                viewOutfits = getViewOutfits(load());
+                rebindEvents();
+                toast('已删除');
+            });
+        });
+    }
+
+    rebindEvents();
 
     var inp = sheet.querySelector('#om-newcat');
     sheet.querySelector('#om-newadd').addEventListener('click', function () {
         var name = inp.value.trim(); if (!name) return;
         var dd = load(); var vc = getViewCategories(dd);
-        if (vc.indexOf(name) === -1) { vc.push(name); save(dd); inp.value = ''; closeSheet(sheet); fn.renderCatbar(); openCatsSheet(); toast('分类「' + name + '」已添加'); }
-        else toast('分类已存在', true);
+        var names = getCatNames(vc);
+        if (names.indexOf(name) !== -1) { toast('分类已存在', true); return; }
+        vc.push({ name: name, children: [] }); save(dd); fn.renderCatbar();
+        cats = getViewCategories(load());
+        viewOutfits = getViewOutfits(load());
+        catNames = getCatNames(cats);
+        inp.value = '';
+        rebindEvents();
+        toast('分类「' + name + '」已添加');
     });
     inp.addEventListener('keydown', function (e) { if (e.key === 'Enter') sheet.querySelector('#om-newadd').click(); });
-
-    sheet.querySelectorAll('.om-cat-ren').forEach(function (btn) {
-        btn.addEventListener('click', function () {
-            var dd = load(); var vc = getViewCategories(dd); var vo = getViewOutfits(dd);
-            var idx = parseInt(btn.dataset.idx); var old = vc[idx];
-            var nw = prompt('重命名（原：' + old + '）：', old); if (!nw || !nw.trim() || nw.trim() === old) return;
-            nw = nw.trim(); vc[idx] = nw;
-            vo.forEach(function (o) { if (o.category === old) o.category = nw; });
-            save(dd); closeSheet(sheet); fn.renderCatbar(); openCatsSheet(); toast('已重命名');
-        });
-    });
-    sheet.querySelectorAll('.om-cat-del').forEach(function (btn) {
-        btn.addEventListener('click', function () {
-            var dd = load(); var vc = getViewCategories(dd); var vo = getViewOutfits(dd);
-            var idx = parseInt(btn.dataset.idx); var name = vc[idx];
-            if (!confirm('删除分类「' + name + '」？（穿搭不会被删除）')) return;
-            vc.splice(idx, 1);
-            vo.forEach(function (o) { if (o.category === name) o.category = ''; });
-            if (state.curCat === name) state.curCat = '__all__';
-            save(dd); closeSheet(sheet); fn.renderCatbar(); openCatsSheet(); toast('已删除');
-        });
-    });
 }
 
 // ── Bottom Sheet 通用创建/关闭 ───────────────────────────
