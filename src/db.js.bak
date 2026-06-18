@@ -96,25 +96,6 @@ function detectServer(cb) {
         .catch(function () { cb(false); });
 }
 
-// 判断是否存在真正的穿搭数据
-// 只存在 categories / charNames / 空角色壳，不算有数据，避免空壳覆盖或无意义迁移
-function hasRealOutfitData(d) {
-    if (!d || typeof d !== 'object') return false;
-
-    if (Array.isArray(d.outfits) && d.outfits.length > 0) return true;
-
-    if (d.chars && typeof d.chars === 'object') {
-        for (var cn in d.chars) {
-            var cd = d.chars[cn];
-            if (cd && Array.isArray(cd.outfits) && cd.outfits.length > 0) {
-                return true;
-            }
-        }
-    }
-
-    return false;
-}
-
 // ── IndexedDB 本地存储 ──────────────────────────────────
 function openDB(cb) {
     if (dbInstance) { cb(dbInstance); return; }
@@ -284,7 +265,17 @@ export function initStorage(cb) {
         if (serverMode) {
             serverGetData(function (serverData) {
                 // 判断后端是否有实质数据（空数组不算）
-                var hasServerData = hasRealOutfitData(serverData);
+                var hasServerData = false;
+                if (serverData) {
+                    if (serverData.outfits && serverData.outfits.length > 0) hasServerData = true;
+                    if (serverData.chars) {
+                        for (var cn in serverData.chars) {
+                            if (serverData.chars[cn] && serverData.chars[cn].outfits && serverData.chars[cn].outfits.length > 0) {
+                                hasServerData = true; break;
+                            }
+                        }
+                    }
+                }
 
                 if (hasServerData) {
                     // 后端有数据，直接用，同时镜像到本地
@@ -298,7 +289,8 @@ export function initStorage(cb) {
                 loadFromDB(function (localData) {
                     dataCache = ensureDefaults(localData);
                     serverReady = true;
-                    var hasLocal = hasRealOutfitData(dataCache);
+                    var hasLocal = (dataCache.outfits && dataCache.outfits.length > 0) ||
+                                   (dataCache.chars && Object.keys(dataCache.chars).length > 0);
                     if (hasLocal) {
                         serverPutData(dataCache);
                         try { console.log('[outfit-manager] 已将本地数据迁移到后端。'); } catch (e) {}
