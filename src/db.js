@@ -265,7 +265,20 @@ export function initStorage(cb) {
 
         if (serverMode) {
             serverGetData(function (serverData) {
-                if (serverData && (serverData.outfits || serverData.chars)) {
+                // 判断后端是否有实质数据（空数组不算）
+                var hasServerData = false;
+                if (serverData) {
+                    if (serverData.outfits && serverData.outfits.length > 0) hasServerData = true;
+                    if (serverData.chars) {
+                        for (var cn in serverData.chars) {
+                            if (serverData.chars[cn] && serverData.chars[cn].outfits && serverData.chars[cn].outfits.length > 0) {
+                                hasServerData = true; break;
+                            }
+                        }
+                    }
+                }
+
+                if (hasServerData) {
                     // 后端有数据，直接用
                     dataCache = ensureDefaults(serverData);
                     serverReady = true;
