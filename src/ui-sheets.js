@@ -620,6 +620,17 @@ function openPresetsSheet() {
 function openSettingsSheet() {
     var d = load();
     var imgCount = d.outfits.filter(function (o) { return !!o.imageData; }).length;
+    var totalOutfits = d.outfits.length;
+    // 统计角色穿搭
+    if (d.chars) {
+        for (var _cn in d.chars) {
+            var _co = d.chars[_cn];
+            if (_co && Array.isArray(_co.outfits)) {
+                totalOutfits += _co.outfits.length;
+                imgCount += _co.outfits.filter(function (o) { return !!o.imageData; }).length;
+            }
+        }
+    }
 
     var sheet = createSheet([
         '<div class="om-sheet-title"><i class="fa-solid fa-sliders"></i>设置</div>',
@@ -677,7 +688,7 @@ function openSettingsSheet() {
 
         '<div class="om-divider"></div>',
         '<div class="om-sec-title">数据</div>',
-        '<div class="om-storage-info">' + d.outfits.length + ' 套穿搭 / ' + imgCount + ' 张图片 / ' + (d.presets ? d.presets.length : 0) + ' 个预设 | ' + (isServerMode() ? '服务器存储' : 'IndexedDB 存储') + '</div>',
+        '<div class="om-storage-info">' + totalOutfits + ' 套穿搭 / ' + imgCount + ' 张图片 / ' + (d.presets ? d.presets.length : 0) + ' 个预设 | ' + (isServerMode() ? '服务器存储' : 'IndexedDB 存储') + '</div>',
         '<div class="om-btn-row" style="margin-top:8px">',
         '<button class="om-btn om-btn-outline" id="om-exp"><i class="fa-solid fa-download"></i> 导出</button>',
         '<button class="om-btn om-btn-outline" id="om-imp"><i class="fa-solid fa-upload"></i> 导入</button>',

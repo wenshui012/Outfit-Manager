@@ -64,8 +64,7 @@ function serverGetData(cb) {
         .then(function (r) { return r.ok ? r.json() : null; })
         .then(function (j) {
             var data = (j && j.ok) ? (j.data || null) : null;
-            // 成功拉取后写一份本地镜像，后端挂了时可回退到最近数据
-            if (data) { mirrorToLocal(data); }
+            // 不在这里 mirrorToLocal — 交给 initStorage 判断后端是否有实质数据再决定
             cb(data);
         })
         .catch(function () { cb(null); });
@@ -279,13 +278,14 @@ export function initStorage(cb) {
                 }
 
                 if (hasServerData) {
-                    // 后端有数据，直接用
+                    // 后端有数据，直接用，同时镜像到本地
                     dataCache = ensureDefaults(serverData);
+                    mirrorToLocal(dataCache);
                     serverReady = true;
                     cb(dataCache);
                     return;
                 }
-                // 后端为空：尝试从本地迁移
+                // 后端没有实质穿搭：从本地迁移，不要被空后端覆盖
                 loadFromDB(function (localData) {
                     dataCache = ensureDefaults(localData);
                     serverReady = true;

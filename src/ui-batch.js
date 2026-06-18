@@ -416,8 +416,9 @@ function openBatchImportModal(files) {
     var d = load();
     var curCat = (state.curCat && state.curCat !== '__all__') ? state.curCat : '';
     var viewCats = getViewCategories(d);
-    var catOpts = '<option value="">无分类</option>' +
-        viewCats.map(function (c) { return '<option value="' + esc(c) + '"' + (c === curCat ? ' selected' : '') + '>' + esc(c) + '</option>'; }).join('');
+    var catNames = getCatNames(viewCats);
+    var catOpts = '<option value="">未分类</option>' +
+        catNames.map(function (c) { return '<option value="' + esc(c) + '"' + (c === curCat ? ' selected' : '') + '>' + esc(c) + '</option>'; }).join('');
     var hasApi = !!(d.apiVision.endpoint && d.apiVision.key && d.apiVision.model);
 
     var modal = document.createElement('div');
