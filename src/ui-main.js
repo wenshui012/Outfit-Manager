@@ -2,7 +2,7 @@
 // 全屏弹窗、视角切换、分类栏、穿搭网格、底栏状态、详情面板
 
 import { load, save, isServerMode, resolveImageForExternal, getImageUrlPrefix } from './db.js';
-import { getCharData, getViewOutfits, getViewCategories, getViewActiveIds, setViewActiveIds, getById, getViewById, isActive, getCatNames, getSubCats, hasSubCats, findCatObj } from './data.js';
+import { getCharData, getViewOutfits, getViewCategories, getViewActiveIds, setViewActiveIds, getById, getViewById, isActive, getCatNames, getSubCats, hasSubCats, findCatObj, SHARED_CHAR_KEY, SHARED_CHAR_LABEL } from './data.js';
 import { genId, esc, toast, getPopupLayer } from './utils.js';
 import { injectStyles } from './styles.js';
 import { state, fn } from './bridge.js';
@@ -51,6 +51,43 @@ var SCRIPT_NAME = '穿搭管理';
 
 var detailPanelOpen = false;
 
+// ── 懒加载 ──────────────────────────────────────────────
+var gridImageObserver = null;
+var OM_TRANSPARENT_PIXEL = 'data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///ywAAAAAAQABAAACAUwAOw==';
+
+function setupGridLazyImages(area) {
+    if (gridImageObserver) { gridImageObserver.disconnect(); gridImageObserver = null; }
+
+    var imgs = area.querySelectorAll('img.om-lazy-img[data-outfit-id]');
+    if (!imgs.length) return;
+
+    function loadImg(img) {
+        if (!img || img.dataset.loaded === '1') return;
+        var id = img.getAttribute('data-outfit-id');
+        var o = getById(load(), id);
+        if (!o || !o.imageData) return;
+        img.dataset.loaded = '1';
+        img.onload = function () { img.classList.add('om-loaded'); };
+        img.onerror = function () { img.classList.add('om-loaded'); };
+        img.src = o.imageData;
+        img.removeAttribute('data-outfit-id');
+        if (img.complete && img.naturalWidth) img.classList.add('om-loaded');
+    }
+
+    // 不支持 IntersectionObserver 的环境直接全部加载
+    if (!('IntersectionObserver' in window)) { imgs.forEach(loadImg); return; }
+
+    gridImageObserver = new IntersectionObserver(function (entries, observer) {
+        entries.forEach(function (entry) {
+            if (!entry.isIntersecting) return;
+            loadImg(entry.target);
+            observer.unobserve(entry.target);
+        });
+    }, { root: area, rootMargin: '400px 0px', threshold: 0.01 });
+
+    imgs.forEach(function (img) { gridImageObserver.observe(img); });
+}
+
 // ── 打开全屏主界面 ────────────────────────────────────────
 function openPopup() {
     if (document.querySelector('.om-overlay')) return;
@@ -65,6 +102,10 @@ function openPopup() {
     injectStyles();
     state.batchMode = false; state.batchSelected = []; state.searchQuery = ''; state.searchOpen = false; detailPanelOpen = false;
     state.catDrillParent = null; state.curSubCat = null;
+    state.filterOpen = false; state.filterNoCat = false; state.filterNoTag = false; state.filterNoDesc = false;
+
+    var d = load();
+    var isUser = d.currentView !== 'char';
 
     var ov = document.createElement('div');
     ov.className = 'om-overlay ' + (state.darkMode ? 'om-dark' : 'om-light');
@@ -77,7 +118,9 @@ function openPopup() {
         '<div class="om-head-title"><i class="fa-solid fa-shirt"></i>' + SCRIPT_NAME + '</div>' +
         '<div class="om-head-actions">' +
         '<button class="om-icon-btn" id="om-search-toggle" title="搜索"><i class="fa-solid fa-magnifying-glass"></i></button>' +
-        '<button class="om-theme-btn" id="om-theme-toggle"><i class="fa-solid fa-circle-half-stroke"></i></button>' +
+        '<button class="om-icon-btn" id="om-filter-toggle" title="筛选"><i class="fa-solid fa-filter"></i></button>' +
+        '<button class="om-icon-btn" id="om-view-toggle" title="' + (isUser ? '切换到角色衣柜' : '切换到User衣柜') + '"><i class="fa-solid ' + (isUser ? 'fa-user' : 'fa-masks-theater') + '"></i></button>' +
+        '<button class="om-icon-btn" id="om-theme-toggle"><i class="fa-solid fa-circle-half-stroke"></i></button>' +
         '<button class="om-icon-btn" id="om-x" title="关闭"><i class="fa-solid fa-xmark"></i></button>' +
         '</div></div>' +
         // 搜索栏（默认隐藏）
@@ -86,16 +129,24 @@ function openPopup() {
         '<input class="om-search-inp" id="om-search-inp" type="text" placeholder="搜索名称或标签…" autocomplete="off" /></div>' +
         '<button class="om-search-clear" id="om-search-clear" title="关闭搜索"><i class="fa-solid fa-xmark"></i></button>' +
         '</div>' +
-        // 视角切换栏（User / Char）
+        // 筛选栏（默认隐藏）
+        '<div class="om-filter-bar" id="om-filter-bar">' +
+        '<button class="om-filter-chip" id="om-filter-nocat">未分类</button>' +
+        '<button class="om-filter-chip" id="om-filter-notag">无标签</button>' +
+        '<button class="om-filter-chip" id="om-filter-nodesc">无描述</button>' +
+        '</div>' +
+        // 视角切换栏（角色模式下显示角色选择）
         '<div class="om-viewbar" id="om-viewbar"></div>' +
         // 分类栏
         '<div class="om-catbar" id="om-catbar"></div>' +
+        // 批量操作区（独立于网格区，紧贴分类栏）
+        '<div class="om-batch-area" id="om-batch-area"></div>' +
         // 网格区
         '<div class="om-grid-area" id="om-grid-area"></div>' +
         // 底栏
         '<div class="om-bottombar" id="om-bottombar" style="position:relative;">' +
         '<div class="om-bottom-status" id="om-bottom-status"></div>' +
-        '<button class="om-batch-toggle-btn" id="om-batch-toggle">多选</button>' +
+        '<button class="om-bottom-btn" id="om-batch-toggle" title="多选"><i class="fa-solid fa-list-check"></i></button>' +
         '<button class="om-bottom-btn" id="om-bottom-presets" title="预设"><i class="fa-solid fa-bookmark"></i></button>' +
         '<button class="om-bottom-btn" id="om-bottom-settings" title="设置"><i class="fa-solid fa-sliders"></i></button>' +
         '</div>' +
@@ -118,6 +169,23 @@ function openPopup() {
             ? '<i class="fa-solid fa-circle-half-stroke"></i>'
             : '<i class="fa-regular fa-sun"></i>';
     });
+    // 视角切换
+    ov.querySelector('#om-view-toggle').addEventListener('click', function () {
+        var dd = load();
+        dd.currentView = dd.currentView === 'char' ? 'user' : 'char';
+        save(dd);
+        charPanelExpanded = false;
+        state.curCat = '__all__'; state.catDrillParent = null; state.curSubCat = null;
+        // 更新按钮图标
+        var isNowUser = dd.currentView !== 'char';
+        var vBtn = ov.querySelector('#om-view-toggle');
+        if (vBtn) {
+            vBtn.innerHTML = '<i class="fa-solid ' + (isNowUser ? 'fa-user' : 'fa-masks-theater') + '"></i>';
+            vBtn.title = isNowUser ? '切换到角色衣柜' : '切换到User衣柜';
+        }
+        renderViewbar(); renderCatbar(); renderGrid(); renderBottomStatus();
+    });
+    // 搜索
     ov.querySelector('#om-search-toggle').addEventListener('click', function () {
         state.searchOpen = !state.searchOpen;
         var bar = document.getElementById('om-search-bar');
@@ -135,6 +203,26 @@ function openPopup() {
     var sinp = ov.querySelector('#om-search-inp');
     sinp.addEventListener('input', function () { state.searchQuery = sinp.value; renderGrid(); });
     sinp.addEventListener('keydown', function (e) { if (e.key === 'Escape') { state.searchOpen = false; state.searchQuery = ''; ov.querySelector('#om-search-bar').classList.remove('open'); renderGrid(); } });
+    // 筛选
+    ov.querySelector('#om-filter-toggle').addEventListener('click', function () {
+        state.filterOpen = !state.filterOpen;
+        var fbar = document.getElementById('om-filter-bar');
+        fbar.classList.toggle('open', state.filterOpen);
+        var fbtn = ov.querySelector('#om-filter-toggle');
+        fbtn.classList.toggle('om-filter-active', state.filterNoCat || state.filterNoTag || state.filterNoDesc);
+    });
+    function bindFilterChip(id, key) {
+        ov.querySelector(id).addEventListener('click', function () {
+            state[key] = !state[key];
+            this.classList.toggle('on', state[key]);
+            var fbtn = ov.querySelector('#om-filter-toggle');
+            fbtn.classList.toggle('om-filter-active', state.filterNoCat || state.filterNoTag || state.filterNoDesc);
+            renderGrid();
+        });
+    }
+    bindFilterChip('#om-filter-nocat', 'filterNoCat');
+    bindFilterChip('#om-filter-notag', 'filterNoTag');
+    bindFilterChip('#om-filter-nodesc', 'filterNoDesc');
 
     // 绑定底栏
     ov.querySelector('#om-bottom-status').addEventListener('click', function () { toggleDetailPanel(); });
@@ -154,6 +242,7 @@ function openPopup() {
 }
 
 function closePopup() {
+    if (gridImageObserver) { gridImageObserver.disconnect(); gridImageObserver = null; }
     var ov = document.querySelector('.om-overlay'); if (ov) ov.parentNode.removeChild(ov);
 }
 
@@ -167,40 +256,34 @@ function renderViewbar() {
     var isUser = d.currentView !== 'char';
     vbar.style.position = 'relative';
 
-    var html = '<button class="om-viewtab' + (isUser ? ' on' : '') + '" data-v="user"><i class="fa-solid fa-user" style="margin-right:4px"></i>User</button>' +
-        '<button class="om-viewtab' + (!isUser ? ' on' : '') + '" data-v="char"><i class="fa-solid fa-masks-theater" style="margin-right:4px"></i>角色</button>';
-
-    if (!isUser) {
-        html += '<input type="text" class="om-char-input" id="om-char-input" placeholder="' + (d.currentChar ? esc(d.currentChar) : '搜索角色…') + '" autocomplete="off" />' +
-            '<button class="om-char-add-btn" id="om-char-add" title="添加角色">+</button>';
+    if (isUser) {
+        // User模式：viewbar隐藏
+        vbar.style.display = 'none';
+        return;
     }
+
+    // 角色模式：显示角色选择
+    vbar.style.display = '';
+    var charLabel = d.currentChar
+        ? (d.currentChar === SHARED_CHAR_KEY ? SHARED_CHAR_LABEL : d.currentChar)
+        : '搜索角色…';
+
+    var html = '<input type="text" class="om-char-input" id="om-char-input" placeholder="' + esc(charLabel) + '" autocomplete="off" />' +
+        '<button class="om-char-add-btn" id="om-char-add" title="添加角色">+</button>';
 
     vbar.innerHTML = html;
 
-    vbar.querySelectorAll('.om-viewtab').forEach(function (tab) {
-        tab.addEventListener('click', function () {
-            var dd = load();
-            dd.currentView = tab.dataset.v;
-            save(dd);
-            charPanelExpanded = false;
-            state.curCat = '__all__'; state.catDrillParent = null; state.curSubCat = null;
-            renderViewbar(); renderCatbar(); renderGrid(); renderBottomStatus();
-        });
+    var inp = vbar.querySelector('#om-char-input');
+    inp.addEventListener('focus', function () {
+        charPanelExpanded = true;
+        renderCharDropdown(vbar, load(), '');
     });
-
-    if (!isUser) {
-        var inp = vbar.querySelector('#om-char-input');
-        inp.addEventListener('focus', function () {
-            charPanelExpanded = true;
-            renderCharDropdown(vbar, load(), '');
-        });
-        inp.addEventListener('input', function () {
-            charPanelExpanded = true;
-            renderCharDropdown(vbar, load(), this.value.trim().toLowerCase());
-        });
-        vbar.querySelector('#om-char-add').addEventListener('click', function () { addCharPrompt(); });
-        if (charPanelExpanded) renderCharDropdown(vbar, d, '');
-    }
+    inp.addEventListener('input', function () {
+        charPanelExpanded = true;
+        renderCharDropdown(vbar, load(), this.value.trim().toLowerCase());
+    });
+    vbar.querySelector('#om-char-add').addEventListener('click', function () { addCharPrompt(); });
+    if (charPanelExpanded) renderCharDropdown(vbar, d, '');
 }
 
 function renderCharDropdown(vbar, d, query) {
@@ -253,6 +336,17 @@ function renderCharDropdown(vbar, d, query) {
     }
 
     var listHtml = '';
+    // ── 通用衣柜（固定在最顶部）──
+    var sharedCd = d.chars && d.chars[SHARED_CHAR_KEY] ? d.chars[SHARED_CHAR_KEY] : { outfits: [] };
+    var sharedCount = (sharedCd.outfits || []).length;
+    var sharedActive = d.currentChar === SHARED_CHAR_KEY;
+    if (!query || SHARED_CHAR_LABEL.toLowerCase().indexOf(query) !== -1 || '通用'.indexOf(query) !== -1) {
+        listHtml += '<div class="om-char-row' + (sharedActive ? ' active' : '') + '" data-cn="' + SHARED_CHAR_KEY + '" style="border-bottom:1px solid rgba(127,127,127,.1)">' +
+            '<i class="fa-solid fa-globe om-char-star on" style="cursor:default"></i>' +
+            '<span class="om-char-rname">' + SHARED_CHAR_LABEL + '</span>' +
+            '<span class="om-char-count">' + sharedCount + '套</span>' +
+            '<div class="om-char-actions"></div></div>';
+    }
     var favNames = allNames.filter(function (n) { return favs.indexOf(n) !== -1; });
     listHtml += makeSection('收藏', 'fa-solid fa-star', favNames, '__fav__');
     for (var gn2 in groups) {
@@ -369,6 +463,7 @@ function renderCharDropdown(vbar, d, query) {
 function addCharPrompt() {
     var name = prompt('输入角色名：');
     if (!name || !name.trim()) return; name = name.trim();
+    if (name === SHARED_CHAR_KEY) { toast('此名称为系统保留，请换一个', true); return; }
     var dd = load();
     if (!dd.charNames) dd.charNames = [];
     if (dd.charNames.indexOf(name) !== -1) { toast('角色「' + name + '」已存在', true); return; }
@@ -483,23 +578,17 @@ function renderGrid() {
         return;
     }
 
-    // 当前视角的穿搭
+    // 当前视角的穿搭（通用衣柜使用__shared__键）
     var allOutfits = getViewOutfits(d);
 
-    // 按分类过滤（支持子分类下钻）
+    // 按分类过滤（支持子分类下钻）— 筛选在分类过滤之后生效
     var list;
     if (state.catDrillParent) {
         // 在子分类下钻模式
         var parentCat = state.catDrillParent;
-        // 先筛出属于该父分类的 outfit
         var inParent = allOutfits.filter(function (o) { return o.category === parentCat; });
-        if (state.curSubCat === null) {
-            // 父分类名高亮 = 显示该父分类下所有
-            list = inParent;
-        } else {
-            // 特定子分类
-            list = inParent.filter(function (o) { return o.subCategory === state.curSubCat; });
-        }
+        if (state.curSubCat === null) list = inParent;
+        else list = inParent.filter(function (o) { return o.subCategory === state.curSubCat; });
     } else if (state.curCat === '__all__') {
         list = allOutfits;
     } else {
@@ -514,25 +603,48 @@ function renderGrid() {
                 (o.description && o.description.toLowerCase().indexOf(q) !== -1);
         });
     }
+    // 筛选过滤（在当前分类内生效）
+    if (state.filterNoCat) {
+        if (state.curCat === '__all__' && !state.catDrillParent) {
+            // 全部视图：没有分类的穿搭
+            list = list.filter(function (o) { return !o.category || !o.category.trim(); });
+        } else {
+            // 分类视图：没有子分类的穿搭（如果该分类本身没有子分类则不过滤）
+            var curCatKey = state.catDrillParent || state.curCat;
+            var cats = getViewCategories(d);
+            if (hasSubCats(cats, curCatKey)) {
+                list = list.filter(function (o) { return !o.subCategory || !o.subCategory.trim(); });
+            }
+        }
+    }
+    if (state.filterNoTag) { list = list.filter(function (o) { return !o.sceneTag || !o.sceneTag.trim(); }); }
+    if (state.filterNoDesc) { list = list.filter(function (o) { return !o.description || !o.description.trim(); }); }
     var imgOutfits = list.filter(function (o) { return !!o.imageData; });
 
-    var html = '';
-
-    // 批量操作栏
-    if (state.batchMode) {
-        html += '<div class="om-batch-bar">' +
-            '<span class="om-batch-info">已选&nbsp;<b id="om-batch-count">' + state.batchSelected.length + '</b>&nbsp;套</span>' +
-            '<div class="om-batch-divider" style="width:1px;height:16px;background:rgba(127,127,127,.25);flex-shrink:0;margin:0 2px;"></div>' +
-            '<div class="om-batch-acts">' +
-            '<button class="om-batch-btn" id="om-batch-selall">全选</button>' +
-            '<button class="om-batch-btn" id="om-batch-none">取消</button>' +
-            '<button class="om-batch-btn" id="om-batch-cat"><i class="fa-solid fa-folder"></i> 分类</button>' +
-            '<button class="om-batch-btn" id="om-batch-move"><i class="fa-solid fa-arrow-right-arrow-left"></i> 移动</button>' +
-            '<button class="om-batch-btn" id="om-batch-tag"><i class="fa-solid fa-tag"></i> 标签</button>' +
-            '<button class="om-batch-btn" id="om-batch-aidesc"><i class="fa-solid fa-wand-magic-sparkles"></i> AI描述</button>' +
-            '<button class="om-batch-btn danger" id="om-batch-del"><i class="fa-solid fa-trash"></i> 删除</button>' +
-            '</div></div>';
+    // ── 批量操作栏渲染到独立区域 ──
+    var batchArea = document.getElementById('om-batch-area');
+    if (batchArea) {
+        if (state.batchMode) {
+            batchArea.style.display = '';
+            batchArea.innerHTML = '<div class="om-batch-bar">' +
+                '<span class="om-batch-info">已选&nbsp;<b id="om-batch-count">' + state.batchSelected.length + '</b>&nbsp;套</span>' +
+                '<div class="om-batch-divider" style="width:1px;height:16px;background:rgba(127,127,127,.25);flex-shrink:0;margin:0 2px;"></div>' +
+                '<div class="om-batch-acts">' +
+                '<button class="om-batch-btn" id="om-batch-selall">全选</button>' +
+                '<button class="om-batch-btn" id="om-batch-none">取消</button>' +
+                '<button class="om-batch-btn" id="om-batch-cat"><i class="fa-solid fa-folder"></i> 分类</button>' +
+                '<button class="om-batch-btn" id="om-batch-move"><i class="fa-solid fa-arrow-right-arrow-left"></i> 移动</button>' +
+                '<button class="om-batch-btn" id="om-batch-tag"><i class="fa-solid fa-tag"></i> 标签</button>' +
+                '<button class="om-batch-btn" id="om-batch-aidesc"><i class="fa-solid fa-wand-magic-sparkles"></i> AI描述</button>' +
+                '<button class="om-batch-btn danger" id="om-batch-del"><i class="fa-solid fa-trash"></i> 删除</button>' +
+                '</div></div>';
+        } else {
+            batchArea.style.display = 'none';
+            batchArea.innerHTML = '';
+        }
     }
+
+    var html = '';
 
     html += '<div class="om-grid">';
 
@@ -542,9 +654,11 @@ function renderGrid() {
     }
 
     if (list.length === 0) {
-        html += '</div><div class="om-empty"><i class="fa-solid fa-shirt"></i><span>' +
-            (state.searchQuery ? '没有匹配「' + esc(state.searchQuery) + '」的穿搭' : (state.curCat !== '__all__' ? '该分类暂无穿搭' : '还没有穿搭，点击左上角添加')) +
-            '</span></div>';
+        var hasFilter = state.filterNoCat || state.filterNoTag || state.filterNoDesc;
+        var emptyMsg = state.searchQuery ? '没有匹配「' + esc(state.searchQuery) + '」的穿搭'
+            : hasFilter ? '没有符合筛选条件的穿搭'
+            : (state.curCat !== '__all__' ? '该分类暂无穿搭' : '还没有穿搭，点击左上角添加');
+        html += '</div><div class="om-empty"><i class="fa-solid fa-shirt"></i><span>' + emptyMsg + '</span></div>';
     } else {
         list.forEach(function (o) {
             var on = isActive(d, o.id);
@@ -554,7 +668,7 @@ function renderGrid() {
 
             var imgContent = '';
             if (o.imageData) {
-                imgContent = '<img src="' + o.imageData + '" alt="' + esc(o.name) + '" loading="lazy" />';
+                imgContent = '<img class="om-lazy-img" src="' + OM_TRANSPARENT_PIXEL + '" data-outfit-id="' + esc(o.id) + '" alt="' + esc(o.name) + '" loading="lazy" decoding="async" />';
             } else {
                 var descPreview = (o.description && o.description.trim()) ? o.description.trim() : '';
                 imgContent = '<div class="om-card-noimg">' +
@@ -580,6 +694,7 @@ function renderGrid() {
     }
 
     area.innerHTML = html;
+    setupGridLazyImages(area);
 
     // 添加卡点击
     var ac = area.querySelector('#om-addcard');
@@ -591,14 +706,14 @@ function renderGrid() {
 
     // 批量操作
     if (state.batchMode) {
-        var selall = area.querySelector('#om-batch-selall');
-        var selnone = area.querySelector('#om-batch-none');
-        var btagBtn = area.querySelector('#om-batch-tag');
-        var bdelBtn = area.querySelector('#om-batch-del');
+        var selall = batchArea.querySelector('#om-batch-selall');
+        var selnone = batchArea.querySelector('#om-batch-none');
+        var btagBtn = batchArea.querySelector('#om-batch-tag');
+        var bdelBtn = batchArea.querySelector('#om-batch-del');
 
         if (selall) selall.addEventListener('click', function () { state.batchSelected = list.map(function (o) { return o.id; }); renderGrid(); });
         if (selnone) selnone.addEventListener('click', function () { state.batchSelected = []; renderGrid(); });
-        var bcatBtn = area.querySelector('#om-batch-cat');
+        var bcatBtn = batchArea.querySelector('#om-batch-cat');
         if (bcatBtn) bcatBtn.addEventListener('click', function () {
             if (state.batchSelected.length === 0) { toast('请先选择穿搭', true); return; }
             var dd = load();
@@ -650,7 +765,7 @@ function renderGrid() {
                 state.batchSelected = []; renderGrid();
             });
         });
-        var bmoveBtn = area.querySelector('#om-batch-move');
+        var bmoveBtn = batchArea.querySelector('#om-batch-move');
         if (bmoveBtn) bmoveBtn.addEventListener('click', function () {
             if (state.batchSelected.length === 0) { toast('请先选择穿搭', true); return; }
             fn.openMoveToPanel(state.batchSelected.slice(), function () {
@@ -671,7 +786,7 @@ function renderGrid() {
             save(dd); fn.updateBtn(); renderBottomStatus(); toast('已删除 ' + state.batchSelected.length + ' 套穿搭'); state.batchSelected = []; renderGrid();
         });
 
-        var baidescBtn = area.querySelector('#om-batch-aidesc');
+        var baidescBtn = batchArea.querySelector('#om-batch-aidesc');
         if (baidescBtn) baidescBtn.addEventListener('click', function () {
             if (state.batchSelected.length === 0) { toast('请先选择穿搭', true); return; }
             var dd = load();
@@ -692,7 +807,7 @@ function renderGrid() {
                 if (idx !== -1) state.batchSelected.splice(idx, 1); else state.batchSelected.push(id);
                 if (chk) chk.classList.toggle('checked', state.batchSelected.indexOf(id) !== -1);
                 card.classList.toggle('batch-sel', state.batchSelected.indexOf(id) !== -1);
-                var cnt = area.querySelector('#om-batch-count');
+                var cnt = document.getElementById('om-batch-count');
                 if (cnt) cnt.textContent = state.batchSelected.length;
             });
         });
@@ -705,7 +820,7 @@ function renderGrid() {
                 chk.classList.toggle('checked', state.batchSelected.indexOf(id) !== -1);
                 var card = chk.closest('.om-card');
                 if (card) card.classList.toggle('batch-sel', state.batchSelected.indexOf(id) !== -1);
-                var cnt = area.querySelector('#om-batch-count');
+                var cnt = document.getElementById('om-batch-count');
                 if (cnt) cnt.textContent = state.batchSelected.length;
             });
         });
@@ -721,6 +836,19 @@ function renderGrid() {
                 var idx = aids.indexOf(id);
                 if (idx !== -1) aids.splice(idx, 1); else aids.push(id);
                 setViewActiveIds(dd, aids);
+
+                // ── 通用衣柜 ↔ 单人衣柜互斥 ──
+                if (dd.currentView === 'char' && idx === -1) {
+                    // 正在激活一套（非取消）
+                    if (dd.currentChar === SHARED_CHAR_KEY) {
+                        // 在通用衣柜激活 → 清空所有单人衣柜
+                        if (dd.chars) { for (var ck in dd.chars) { if (ck !== SHARED_CHAR_KEY) dd.chars[ck].activeIds = []; } }
+                    } else {
+                        // 在单人衣柜激活 → 清空通用衣柜
+                        if (dd.chars && dd.chars[SHARED_CHAR_KEY]) dd.chars[SHARED_CHAR_KEY].activeIds = [];
+                    }
+                }
+
                 save(dd); fn.updateBtn(); renderBottomStatus();
                 preResolveActiveImages();
                 // 更新卡片样式
@@ -782,7 +910,7 @@ function renderBottomStatus() {
         if (d.chars) {
             for (var cn2 in d.chars) {
                 var cnt = allActive.filter(function (a) { return a.owner === cn2; }).length;
-                if (cnt > 0) parts.push(cn2 + ' ' + cnt + '套');
+                if (cnt > 0) parts.push((cn2 === SHARED_CHAR_KEY ? '通用' : cn2) + ' ' + cnt + '套');
             }
         }
         text = parts.join(' · ');
@@ -820,7 +948,7 @@ function toggleDetailPanel() {
             (cd.activeIds || []).forEach(function (id) {
                 for (var k = 0; k < (cd.outfits || []).length; k++) { if (cd.outfits[k].id === id) { charNames.push({ id: id, name: cd.outfits[k].name }); break; } }
             });
-            if (charNames.length > 0) groups.push({ owner: cn, items: charNames });
+            if (charNames.length > 0) groups.push({ owner: cn === SHARED_CHAR_KEY ? '通用' : cn, items: charNames });
         }
     }
     if (groups.length === 0) return;

@@ -2,7 +2,7 @@
 // fetch/XHR 拦截 + 穿搭信息注入到 AI 请求
 
 import { load } from './db.js';
-import { getById } from './data.js';
+import { getById, SHARED_CHAR_KEY } from './data.js';
 import { toast } from './utils.js';
 import { state } from './bridge.js';
 
@@ -90,7 +90,7 @@ function injectImageBlocks(p, ownerImageGroups, imgPrompt, multiImgPrompt) {
                     hasMulti = true;
                     c.push({ type: 'text', text: '\n[' + grp.name + '的可选穿搭 - 共' + grp.outfits.length + '套]' });
                     grp.outfits.forEach(function (o, i) {
-                        c.push({ type: 'text', text: '\n(' + (i + 1) + ') ' + o.name + (o.sceneTag ? ' [场景：' + o.sceneTag + ']' : '') + '：' });
+                        c.push({ type: 'text', text: '\n(穿搭' + (i + 1) + ')' + (o.sceneTag ? ' [场景：' + o.sceneTag + ']' : '') + '：' });
                         c.push({ type: 'image_url', image_url: { url: getInjectImageUrl(o) } });
                     });
                 } else {
@@ -128,8 +128,24 @@ function tryInjectBody(bodyStr) {
     (d.activeIds || []).forEach(function (id) { for (var i = 0; i < d.outfits.length; i++) { if (d.outfits[i].id === id) { userOutfits.push(d.outfits[i]); break; } } });
     if (userOutfits.length > 0) owners.push({ name: 'User', outfits: userOutfits, tplSingle: d.singleTemplate, tplMulti: d.multiTemplate });
 
-    if (d.chars) {
+    // ── 角色衣柜：通用 vs 单人互斥 ──
+    var sharedOutfits = [];
+    if (d.chars && d.chars[SHARED_CHAR_KEY]) {
+        var scd = d.chars[SHARED_CHAR_KEY];
+        (scd.activeIds || []).forEach(function (id) { for (var k = 0; k < (scd.outfits || []).length; k++) { if (scd.outfits[k].id === id) { sharedOutfits.push(scd.outfits[k]); break; } } });
+    }
+
+    if (sharedOutfits.length > 0) {
+        // 通用衣柜有激活 → 用当前角色卡名字注入，忽略所有单人衣柜
+        var charName2 = '';
+        try { charName2 = SillyTavern.getContext().name2 || ''; } catch (e) {}
+        if (charName2) {
+            owners.push({ name: charName2, outfits: sharedOutfits, tplSingle: d.charSingleTemplate, tplMulti: d.charMultiTemplate });
+        }
+    } else if (d.chars) {
+        // 通用衣柜无激活 → 使用单人衣柜
         for (var cn in d.chars) {
+            if (cn === SHARED_CHAR_KEY) continue;
             var cd = d.chars[cn];
             var cos = [];
             (cd.activeIds || []).forEach(function (id) { for (var k = 0; k < (cd.outfits || []).length; k++) { if (cd.outfits[k].id === id) { cos.push(cd.outfits[k]); break; } } });
@@ -149,8 +165,8 @@ function tryInjectBody(bodyStr) {
         if (isMulti) {
             var lines = active.map(function (o, i) {
                 var scene = o.sceneTag ? '【场景：' + o.sceneTag + '】' : '';
-                var desc = (o.description && o.description.trim()) ? o.description.trim() : o.name;
-                return '[' + (i + 1) + '] ' + o.name + ' ' + scene + '\n描述：' + desc;
+                var desc = (o.description && o.description.trim()) ? o.description.trim() : '';
+                return '[穿搭' + (i + 1) + '] ' + scene + (desc ? '\n' + desc : '');
             });
             if (useText) {
                 var wt = (ow.tplMulti || '[服装信息]\n{{charName}}的穿搭：\n{{wardrobe}}')
@@ -165,11 +181,13 @@ function tryInjectBody(bodyStr) {
         } else {
             var o = active[0];
             if (useText) {
-                var desc2 = (o.description && o.description.trim()) ? o.description.trim() : o.name;
-                var st = (ow.tplSingle || '[服装信息]\n{{charName}}当前穿着：\n{{description}}')
-                    .replace(/\{\{charName\}\}/g, ow.name)
-                    .replace('{{description}}', desc2);
-                allTextParts.push(st);
+                var desc2 = (o.description && o.description.trim()) ? o.description.trim() : '';
+                if (desc2) {
+                    var st = (ow.tplSingle || '[服装信息]\n{{charName}}当前穿着：\n{{description}}')
+                        .replace(/\{\{charName\}\}/g, ow.name)
+                        .replace('{{description}}', desc2);
+                    allTextParts.push(st);
+                }
             }
             if (useImg && o.imageData) { ownerImageGroups.push({ name: ow.name, outfits: [o], isMulti: false }); }
         }

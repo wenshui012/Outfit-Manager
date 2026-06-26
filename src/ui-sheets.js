@@ -2,7 +2,7 @@
 // 操作菜单、编辑面板、预设、设置、分类管理、Lightbox、导入导出、批量描述
 
 import { load, save, isServerMode } from './db.js';
-import { def, getCharData, getViewOutfits, getViewCategories, getViewActiveIds, setViewActiveIds, getById, getViewById, isActive, getCatNames, getSubCats, findCatObj, hasSubCats } from './data.js';
+import { def, getCharData, getViewOutfits, getViewCategories, getViewActiveIds, setViewActiveIds, getById, getViewById, isActive, getCatNames, getSubCats, findCatObj, hasSubCats, SHARED_CHAR_KEY, SHARED_CHAR_LABEL } from './data.js';
 import { genId, esc, toast, getPopupLayer, compressImage } from './utils.js';
 import { generateSingleDescription, batchGenerateDescriptions, openModelPicker, normalizeEndpoint } from './api.js';
 import { state, fn } from './bridge.js';
@@ -810,7 +810,7 @@ function openSettingsSheet() {
     sheet.querySelector('#om-imp').addEventListener('click', function () { fn.importData(); });
     sheet.querySelector('#om-clear').addEventListener('click', function () {
         var dd = load();
-        var label = dd.currentView === 'char' && dd.currentChar ? '「' + dd.currentChar + '」的穿搭' : 'User 的穿搭';
+        var label = dd.currentView === 'char' && dd.currentChar ? '「' + (dd.currentChar === SHARED_CHAR_KEY ? SHARED_CHAR_LABEL : dd.currentChar) + '」的穿搭' : 'User 的穿搭';
         if (!confirm('确定清空' + label + '？（其他数据不受影响）')) return;
         if (dd.currentView === 'char' && dd.currentChar) {
             var cd = getCharData(dd, dd.currentChar);
@@ -831,7 +831,7 @@ function openCatsSheet() {
     var cats = getViewCategories(d);
     var catNames = getCatNames(cats);
     var viewOutfits = getViewOutfits(d);
-    var viewLabel = d.currentView === 'char' && d.currentChar ? d.currentChar + '的' : 'User的';
+    var viewLabel = d.currentView === 'char' && d.currentChar ? (d.currentChar === SHARED_CHAR_KEY ? SHARED_CHAR_LABEL : d.currentChar) + '的' : 'User的';
     // 折叠状态（面板内部管理，每次打开默认全部折叠）
     var expanded = {};
 

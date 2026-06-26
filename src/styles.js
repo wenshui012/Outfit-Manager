@@ -34,11 +34,6 @@ export function injectStyles() {
             'width:34px;height:34px;border-radius:50%;display:flex;align-items:center;justify-content:center;',
             'transition:.18s;color:inherit;flex-shrink:0;}',
             '.om-icon-btn:hover{opacity:1;background:rgba(127,127,127,.12);color:var(--SmartThemeQuoteColor,#7c6daf);}',
-            /* 日夜切换 */
-            '.om-theme-btn{cursor:pointer;background:rgba(127,127,127,.1);border:1px solid rgba(127,127,127,.2);',
-            'border-radius:14px;padding:4px 10px;font-size:.75em;display:flex;align-items:center;gap:5px;',
-            'transition:.2s;color:inherit;flex-shrink:0;height:28px;white-space:nowrap;}',
-            '.om-theme-btn:hover{background:rgba(127,127,127,.2);}',,
 
             /* 搜索框（顶栏下方展开）*/
             '.om-search-bar{display:none;padding:8px 15px;border-bottom:1px solid rgba(127,127,127,.08);',
@@ -51,6 +46,16 @@ export function injectStyles() {
             '.om-search-inp:focus{outline:none;border-color:var(--SmartThemeQuoteColor,#7c6daf);}',
             '.om-search-clear{background:none;border:none;color:inherit;opacity:.4;cursor:pointer;font-size:.9em;padding:4px;line-height:1;}',
             '.om-search-clear:hover{opacity:.9;}',
+
+            /* ══ 筛选栏 ══ */
+            '.om-filter-bar{display:none;padding:6px 15px;gap:8px;border-bottom:1px solid rgba(127,127,127,.08);',
+            'background:rgba(0,0,0,.04);flex-shrink:0;flex-wrap:wrap;}',
+            '.om-filter-bar.open{display:flex;align-items:center;}',
+            '.om-filter-chip{padding:4px 12px;border-radius:14px;font-size:.72em;cursor:pointer;white-space:nowrap;',
+            'border:1px solid rgba(127,127,127,.2);background:rgba(127,127,127,.06);transition:all .15s;color:inherit;font-family:inherit;}',
+            '.om-filter-chip:hover{border-color:var(--SmartThemeQuoteColor,#7c6daf);}',
+            '.om-filter-chip.on{background:var(--SmartThemeQuoteColor,#7c6daf);color:#fff;border-color:var(--SmartThemeQuoteColor,#7c6daf);font-weight:600;}',
+            '.om-icon-btn.om-filter-active{color:var(--SmartThemeQuoteColor,#7c6daf);opacity:1;}',
 
             /* ══ 视角切换栏 ══ */
             '.om-viewbar{display:flex;align-items:center;gap:6px;padding:8px 15px;flex-shrink:0;',
@@ -132,6 +137,8 @@ export function injectStyles() {
             '.om-card-img{width:100%;aspect-ratio:3/4;position:relative;background:rgba(127,127,127,.1);',
             'display:flex;align-items:center;justify-content:center;overflow:hidden;flex-shrink:0;}',
             '.om-card-img img{width:100%;height:100%;object-fit:cover;display:block;}',
+            '.om-lazy-img{opacity:0;transition:opacity .25s ease;}',
+            '.om-lazy-img.om-loaded{opacity:1;}',
             /* 底部渐变文字遮罩 */
             /* 触屏：点击过的卡片菜单常显 */
             '@media (hover:none){.om-card-menu{opacity:.75 !important;}}',
@@ -184,9 +191,12 @@ export function injectStyles() {
             '.om-card-menu:hover{background:rgba(0,0,0,.75);}',
 
             /* ══ 批量操作栏（网格区顶部，随滚动）══ */
-            '.om-batch-bar{display:flex;align-items:center;gap:6px;padding:8px 10px;',
-            'background:rgba(124,109,175,.08);border:1px solid rgba(124,109,175,.2);',
-            'border-radius:10px;margin-bottom:10px;flex-wrap:nowrap;overflow-x:auto;',
+            /* ══ 批量操作区（独立于网格，紧贴分类栏）══ */
+            '.om-batch-area{flex-shrink:0;}',
+            '.om-batch-bar{display:flex;align-items:center;gap:6px;padding:8px 12px;',
+            'background:rgba(124,109,175,.06);',
+            'border-bottom:1px solid rgba(124,109,175,.15);',
+            'flex-wrap:nowrap;overflow-x:auto;',
             '-webkit-overflow-scrolling:touch;scrollbar-width:none;}',
             '.om-batch-bar::-webkit-scrollbar{display:none;}',
             '.om-batch-info{font-size:.82em;font-weight:600;color:var(--SmartThemeQuoteColor,#7c6daf);white-space:nowrap;flex-shrink:0;}',
@@ -223,11 +233,7 @@ export function injectStyles() {
             'transition:.18s;flex-shrink:0;}',
             '.om-bottom-btn:hover{background:rgba(127,127,127,.15);border-color:var(--SmartThemeQuoteColor,#7c6daf);',
             'color:var(--SmartThemeQuoteColor,#7c6daf);}',
-            '.om-batch-toggle-btn{padding:6px 11px;border-radius:18px;border:1px solid rgba(127,127,127,.2);',
-            'background:rgba(127,127,127,.07);color:inherit;cursor:pointer;font-size:.75em;',
-            'white-space:nowrap;font-family:inherit;transition:.15s;flex-shrink:0;}',
-            '.om-batch-toggle-btn:hover{border-color:var(--SmartThemeQuoteColor,#7c6daf);color:var(--SmartThemeQuoteColor,#7c6daf);}',
-            '.om-batch-toggle-btn.on{background:var(--SmartThemeQuoteColor,#7c6daf);color:#fff;border-color:var(--SmartThemeQuoteColor,#7c6daf);}',
+            '.om-bottom-btn.on{background:var(--SmartThemeQuoteColor,#7c6daf);color:#fff;border-color:var(--SmartThemeQuoteColor,#7c6daf);}',
 
             /* ══ 选择详情面板（从底栏上方弹出）══ */
             '.om-detail-panel{position:absolute;bottom:0;left:0;right:0;',
@@ -361,6 +367,22 @@ export function injectStyles() {
             '.om-cat-add-row input{flex:1;background:rgba(127,127,127,.08);border:1px solid rgba(127,127,127,.2);',
             'border-radius:8px;color:inherit;padding:8px 11px;font-size:.88em;font-family:inherit;box-sizing:border-box;}',
             '.om-cat-add-row input:focus{outline:none;border-color:var(--SmartThemeQuoteColor,#7c6daf);}',
+            /* 移动/复制切换 */
+            '.om-move-toggle{display:flex;gap:6px;margin-bottom:8px;}',
+            '.om-move-toggle-btn{flex:1;padding:8px 0;border-radius:8px;border:1px solid rgba(127,127,127,.2);',
+            'background:rgba(127,127,127,.06);color:inherit;cursor:pointer;font-size:.85em;',
+            'font-family:inherit;transition:all .15s;display:flex;align-items:center;justify-content:center;gap:6px;}',
+            '.om-move-toggle-btn:hover{border-color:var(--SmartThemeQuoteColor,#7c6daf);}',
+            '.om-move-toggle-btn.on{background:var(--SmartThemeQuoteColor,#7c6daf);color:#fff;border-color:var(--SmartThemeQuoteColor,#7c6daf);font-weight:600;}',
+            /* 折叠式移动面板 */
+            '.om-acc-row{display:flex;align-items:center;gap:4px;padding:10px 12px;cursor:pointer;',
+            'border-radius:8px;transition:background .12s;font-size:.9em;}',
+            '.om-acc-row:hover{background:rgba(127,127,127,.08);}',
+            '.om-acc-arrow{font-size:.6em;opacity:.35;width:14px;text-align:center;transition:transform .15s;flex-shrink:0;}',
+            '.om-acc-arrow.open{transform:rotate(90deg);}',
+            '.om-acc-leaf{padding:9px 12px;cursor:pointer;border-radius:7px;font-size:.88em;',
+            'transition:background .12s;color:inherit;}',
+            '.om-acc-leaf:hover{background:rgba(124,109,175,.12);color:var(--SmartThemeQuoteColor,#7c6daf);}',
             /* 预设 */
             '.om-preset-item{display:flex;align-items:center;gap:8px;padding:10px 14px;',
             'background:rgba(127,127,127,.06);border-radius:9px;border:1px solid rgba(127,127,127,.1);',

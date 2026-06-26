@@ -2,7 +2,7 @@
 // 批量标签、批量导入、批量AI生成、数据导出导入
 
 import { load, save, isServerMode, batchResolveImages, uploadImage, getImageUrlPrefix } from './db.js';
-import { getCharData, getViewOutfits, getViewCategories, getById, getCatNames, getSubCats } from './data.js';
+import { getCharData, getViewOutfits, getViewCategories, getById, getCatNames, getSubCats, SHARED_CHAR_KEY, SHARED_CHAR_LABEL } from './data.js';
 import { genId, esc, toast, getPopupLayer, compressImage } from './utils.js';
 import { batchGenerateDescriptions } from './api.js';
 import { state, fn } from './bridge.js';
@@ -635,125 +635,175 @@ function openMoveToPanel(selectedIds, onDone) {
     var d = load();
     var count = selectedIds.length;
     var isCharView = d.currentView === 'char' && d.currentChar;
-    var currentLabel = isCharView ? d.currentChar : 'User';
+    var currentLabel = isCharView ? (d.currentChar === SHARED_CHAR_KEY ? SHARED_CHAR_LABEL : d.currentChar) : 'User';
+    var isCopy = false;
 
-    // ── 第一步：选目标位置 ──
-    var destHtml = '<div class="om-sheet-title"><i class="fa-solid fa-arrow-right-arrow-left"></i>移动到…</div>';
-    destHtml += '<div class="om-hint" style="margin-bottom:10px">将 ' + count + ' 套穿搭移动到目标位置<br><span style="opacity:.6;font-size:.9em">当前：' + esc(currentLabel) + '</span></div>';
-
-    // User 衣柜（如果当前不是user则显示）
-    if (isCharView) {
-        destHtml += '<div class="om-cat-item om-move-dest" data-type="user" style="cursor:pointer"><i class="fa-solid fa-user" style="opacity:.5;width:20px;text-align:center;margin-right:4px"></i><span class="om-cat-name" style="font-weight:600">User 衣柜</span></div>';
-    }
-
-    // 角色衣柜列表（排除当前角色）
-    var charNames = d.charNames || [];
-    charNames.forEach(function (cn) {
-        if (isCharView && cn === d.currentChar) return; // 跳过当前角色
-        destHtml += '<div class="om-cat-item om-move-dest" data-type="char" data-char="' + esc(cn) + '" style="cursor:pointer"><i class="fa-solid fa-masks-theater" style="opacity:.5;width:20px;text-align:center;margin-right:4px"></i><span class="om-cat-name">' + esc(cn) + '</span></div>';
-    });
-
-    // 如果当前是user，显示user自己的分类选项（在同视角内移分类）
-    if (!isCharView) {
-        destHtml += '<div class="om-cat-item om-move-dest" data-type="user" style="cursor:pointer"><i class="fa-solid fa-user" style="opacity:.5;width:20px;text-align:center;margin-right:4px"></i><span class="om-cat-name" style="font-weight:600">User 衣柜（改分类）</span></div>';
-    }
-    // 当前角色自己（改分类）
-    if (isCharView) {
-        destHtml += '<div class="om-cat-item om-move-dest" data-type="char" data-char="' + esc(d.currentChar) + '" style="cursor:pointer"><i class="fa-solid fa-masks-theater" style="opacity:.5;width:20px;text-align:center;margin-right:4px"></i><span class="om-cat-name">' + esc(d.currentChar) + '（改分类）</span></div>';
-    }
-
-    // 预设列表（复制）
+    // ── 第一步：选类型 ──
+    var html = '<div class="om-sheet-title"><i class="fa-solid fa-arrow-right-arrow-left"></i>移动 / 复制</div>';
+    html += '<div class="om-hint" style="margin-bottom:10px">' + count + ' 套穿搭 · 来自：' + esc(currentLabel) + '</div>';
+    html += '<div class="om-move-toggle">' +
+        '<button class="om-move-toggle-btn on" data-mode="move"><i class="fa-solid fa-arrow-right-arrow-left"></i> 移动</button>' +
+        '<button class="om-move-toggle-btn" data-mode="copy"><i class="fa-regular fa-copy"></i> 复制</button></div>';
+    html += '<div class="om-divider" style="margin:10px 0"></div>';
+    html += '<div class="om-cat-item om-move-type" data-type="user" style="cursor:pointer;padding:14px"><i class="fa-solid fa-user" style="opacity:.45;width:22px;text-align:center;margin-right:8px"></i><span class="om-cat-name" style="font-weight:600;font-size:1em">User 衣柜</span></div>';
+    html += '<div class="om-cat-item om-move-type" data-type="char" style="cursor:pointer;padding:14px"><i class="fa-solid fa-masks-theater" style="opacity:.45;width:22px;text-align:center;margin-right:8px"></i><span class="om-cat-name" style="font-weight:600;font-size:1em">角色衣柜</span></div>';
     if (Array.isArray(d.presets) && d.presets.length > 0) {
-        destHtml += '<div class="om-divider"></div>';
-        destHtml += '<div class="om-hint" style="margin-bottom:6px"><i class="fa-solid fa-copy" style="margin-right:4px"></i>复制到预设</div>';
-        d.presets.forEach(function (p, pi) {
-            if (!p) return;
-            destHtml += '<div class="om-cat-item om-move-dest" data-type="preset" data-pidx="' + pi + '" style="cursor:pointer"><i class="fa-solid fa-bookmark" style="opacity:.5;width:20px;text-align:center;margin-right:4px"></i><span class="om-cat-name">' + esc(p.name || '预设' + (pi + 1)) + '</span><span class="om-cat-count">' + (p.outfits ? p.outfits.length : 0) + '套</span></div>';
-        });
+        html += '<div class="om-divider" style="margin:10px 0"></div>';
+        html += '<div class="om-cat-item om-move-type" data-type="preset" style="cursor:pointer;padding:14px"><i class="fa-solid fa-bookmark" style="opacity:.45;width:22px;text-align:center;margin-right:8px"></i><span class="om-cat-name" style="font-weight:600;font-size:1em">复制到预设</span></div>';
     }
 
-    var sheet1 = createSheet(destHtml);
+    var sheet1 = createSheet(html);
 
-    sheet1.querySelectorAll('.om-move-dest').forEach(function (item) {
+    sheet1.querySelectorAll('.om-move-toggle-btn').forEach(function (btn) {
+        btn.addEventListener('click', function () {
+            isCopy = btn.dataset.mode === 'copy';
+            sheet1.querySelectorAll('.om-move-toggle-btn').forEach(function (b) { b.classList.toggle('on', b === btn); });
+        });
+    });
+    sheet1.querySelectorAll('.om-move-type').forEach(function (item) {
         item.addEventListener('click', function () {
             var type = item.dataset.type;
-            var charName = item.dataset.char || '';
-            var presetIdx = item.dataset.pidx !== undefined ? parseInt(item.dataset.pidx) : -1;
             closeSheet(sheet1);
-
-            if (type === 'preset') {
-                // 复制到预设 → 直接选分类
-                openMoveCatPicker(selectedIds, type, '', presetIdx, onDone);
-            } else {
-                // user 或 char → 选分类/子分类
-                openMoveCatPicker(selectedIds, type, charName, -1, onDone);
-            }
+            openMoveDetailSheet(selectedIds, type, isCopy, onDone);
         });
     });
 }
 
-// ── 第二步：选目标分类+子分类 ──
-function openMoveCatPicker(selectedIds, targetType, targetChar, presetIdx, onDone) {
+// ── 第二步：折叠式详情选择 ──
+function openMoveDetailSheet(selectedIds, type, isCopy, onDone) {
     var d = load();
     var count = selectedIds.length;
-    var isCurrentView = false;
+    var actionWord = isCopy ? '复制' : '移动';
+    var exp = {}; // 折叠状态
 
-    // 获取目标位置的分类列表
-    var targetCats;
-    var targetLabel;
-    if (targetType === 'preset') {
-        var p = d.presets[presetIdx];
-        targetCats = (p && p.categories) || [];
-        targetLabel = p ? (p.name || '预设') : '预设';
-    } else if (targetType === 'char' && targetChar) {
-        var cd = getCharData(d, targetChar);
-        targetCats = cd.categories || [];
-        targetLabel = targetChar;
-        // 判断是否是当前视角（改分类而非移动）
-        if (d.currentView === 'char' && d.currentChar === targetChar) isCurrentView = true;
-    } else {
-        targetCats = d.categories || [];
-        targetLabel = 'User';
-        if (d.currentView === 'user' || !d.currentChar) isCurrentView = true;
+    function doAction(targetType, targetChar, presetIdx, targetCat, targetSub) {
+        closeSheet(sheet);
+        var isCurrentView = false;
+        if (targetType === 'user' && (d.currentView === 'user' || !d.currentChar)) isCurrentView = true;
+        if (targetType === 'char' && targetChar && d.currentView === 'char' && d.currentChar === targetChar) isCurrentView = true;
+        executeMove(selectedIds, targetType, targetChar, presetIdx, targetCat, targetSub, isCurrentView, isCopy, onDone);
     }
 
-    var catNames = getCatNames(targetCats);
-    var actionWord = isCurrentView ? '更改分类' : (targetType === 'preset' ? '复制' : '移动');
-
-    var html = '<div class="om-sheet-title"><i class="fa-solid fa-folder"></i>选择目标分类</div>';
-    html += '<div class="om-hint" style="margin-bottom:10px">' + actionWord + ' ' + count + ' 套到「' + esc(targetLabel) + '」</div>';
-
-    // 无分类选项
-    html += '<div class="om-cat-item om-move-cat" data-cat="" data-sub="" style="cursor:pointer;opacity:.6"><span class="om-cat-name">不设分类</span></div>';
-
-    // 分类+子分类树
-    targetCats.forEach(function (catObj) {
-        var catName = typeof catObj === 'object' ? catObj.name : catObj;
-        var children = typeof catObj === 'object' ? (catObj.children || []) : [];
-        html += '<div class="om-cat-item om-move-cat" data-cat="' + esc(catName) + '" data-sub="" style="cursor:pointer;font-weight:600"><span class="om-cat-name">' + esc(catName) + '</span></div>';
-        children.forEach(function (sc) {
-            html += '<div class="om-cat-item om-move-cat" data-cat="' + esc(catName) + '" data-sub="' + esc(sc) + '" style="cursor:pointer;padding-left:28px;opacity:.85"><span class="om-cat-name"><i class="fa-solid fa-turn-up fa-rotate-90" style="font-size:.6em;opacity:.3;margin-right:6px"></i>' + esc(sc) + '</span></div>';
+    function buildCatTree(cats, indent) {
+        var h = '';
+        h += '<div class="om-acc-leaf" data-cat="" data-sub="" style="padding-left:' + indent + 'px;opacity:.55">不设分类</div>';
+        (cats || []).forEach(function (catObj) {
+            var catName = typeof catObj === 'object' ? catObj.name : catObj;
+            var children = typeof catObj === 'object' ? (catObj.children || []) : [];
+            if (children.length > 0) {
+                var isOpen = exp['cat_' + catName];
+                h += '<div class="om-acc-row om-acc-cat-toggle" data-key="cat_' + esc(catName) + '" style="padding-left:' + (indent - 4) + 'px"><i class="fa-solid fa-chevron-right om-acc-arrow' + (isOpen ? ' open' : '') + '"></i><span style="font-weight:600">' + esc(catName) + '</span></div>';
+                if (isOpen) {
+                    h += '<div class="om-acc-leaf" data-cat="' + esc(catName) + '" data-sub="" style="padding-left:' + (indent + 16) + 'px">全部' + esc(catName) + '</div>';
+                    children.forEach(function (sc) {
+                        h += '<div class="om-acc-leaf" data-cat="' + esc(catName) + '" data-sub="' + esc(sc) + '" style="padding-left:' + (indent + 16) + 'px"><i class="fa-solid fa-turn-up fa-rotate-90" style="font-size:.55em;opacity:.25;margin-right:5px"></i>' + esc(sc) + '</div>';
+                    });
+                }
+            } else {
+                h += '<div class="om-acc-leaf" data-cat="' + esc(catName) + '" data-sub="" style="padding-left:' + indent + 'px">' + esc(catName) + '</div>';
+            }
         });
-    });
+        return h;
+    }
 
-    var sheet2 = createSheet(html);
+    function render() {
+        var dd = load();
+        var h = '';
+        if (type === 'user') {
+            h += buildCatTree(dd.categories, 16);
+        } else if (type === 'char') {
+            // 通用衣柜
+            var shCd = getCharData(dd, SHARED_CHAR_KEY);
+            var shOpen = exp[SHARED_CHAR_KEY];
+            h += '<div class="om-acc-row om-acc-char" data-cn="' + SHARED_CHAR_KEY + '"><i class="fa-solid fa-chevron-right om-acc-arrow' + (shOpen ? ' open' : '') + '"></i><i class="fa-solid fa-globe" style="opacity:.45;margin-right:5px"></i>' + SHARED_CHAR_LABEL + '</div>';
+            if (shOpen) h += buildCatTree(shCd.categories, 36);
+            // 其他角色
+            (dd.charNames || []).forEach(function (cn) {
+                var cd = getCharData(dd, cn);
+                var cOpen = exp[cn];
+                h += '<div class="om-acc-row om-acc-char" data-cn="' + esc(cn) + '"><i class="fa-solid fa-chevron-right om-acc-arrow' + (cOpen ? ' open' : '') + '"></i><i class="fa-solid fa-masks-theater" style="opacity:.45;margin-right:5px"></i>' + esc(cn) + '</div>';
+                if (cOpen) h += buildCatTree(cd.categories, 36);
+            });
+        } else if (type === 'preset') {
+            (dd.presets || []).forEach(function (p, pi) {
+                if (!p) return;
+                var pOpen = exp['p_' + pi];
+                h += '<div class="om-acc-row om-acc-preset" data-pidx="' + pi + '"><i class="fa-solid fa-chevron-right om-acc-arrow' + (pOpen ? ' open' : '') + '"></i><i class="fa-solid fa-bookmark" style="opacity:.45;margin-right:5px"></i>' + esc(p.name || '预设' + (pi + 1)) + ' <span style="opacity:.4;font-size:.85em">' + (p.outfits ? p.outfits.length : 0) + '套</span></div>';
+                if (pOpen) h += buildCatTree((p && p.categories) || [], 36);
+            });
+        }
+        return h;
+    }
 
-    sheet2.querySelectorAll('.om-move-cat').forEach(function (item) {
-        item.addEventListener('click', function () {
-            var targetCat = item.dataset.cat;
-            var targetSub = item.dataset.sub;
-            closeSheet(sheet2);
-            executeMove(selectedIds, targetType, targetChar, presetIdx, targetCat, targetSub, isCurrentView, onDone);
+    function bindEvents() {
+        var content = sheet.querySelector('.om-sheet-scroll') || sheet;
+        // 角色折叠
+        content.querySelectorAll('.om-acc-char').forEach(function (row) {
+            row.addEventListener('click', function () { exp[row.dataset.cn] = !exp[row.dataset.cn]; refresh(); });
         });
-    });
+        // 预设折叠
+        content.querySelectorAll('.om-acc-preset').forEach(function (row) {
+            row.addEventListener('click', function () { var k = 'p_' + row.dataset.pidx; exp[k] = !exp[k]; refresh(); });
+        });
+        // 分类折叠
+        content.querySelectorAll('.om-acc-cat-toggle').forEach(function (row) {
+            row.addEventListener('click', function () { exp[row.dataset.key] = !exp[row.dataset.key]; refresh(); });
+        });
+        // 叶子点击 → 执行
+        content.querySelectorAll('.om-acc-leaf').forEach(function (leaf) {
+            leaf.addEventListener('click', function () {
+                var cat = leaf.dataset.cat || '';
+                var sub = leaf.dataset.sub || '';
+                if (type === 'user') {
+                    doAction('user', '', -1, cat, sub);
+                } else if (type === 'char') {
+                    // 找到所属角色：向上找最近的展开的om-acc-char
+                    var charName = '';
+                    var prev = leaf.previousElementSibling;
+                    while (prev) {
+                        if (prev.classList.contains('om-acc-char') && exp[prev.dataset.cn]) { charName = prev.dataset.cn; break; }
+                        prev = prev.previousElementSibling;
+                    }
+                    if (charName) doAction('char', charName, -1, cat, sub);
+                } else if (type === 'preset') {
+                    var pidx = -1;
+                    var prev2 = leaf.previousElementSibling;
+                    while (prev2) {
+                        if (prev2.classList.contains('om-acc-preset') && exp['p_' + prev2.dataset.pidx]) { pidx = parseInt(prev2.dataset.pidx); break; }
+                        prev2 = prev2.previousElementSibling;
+                    }
+                    if (pidx >= 0) doAction('preset', '', pidx, cat, sub);
+                }
+            });
+        });
+    }
+
+    function refresh() {
+        var scrollEl = sheet.querySelector('.om-sheet-scroll');
+        var scrollTop = scrollEl ? scrollEl.scrollTop : 0;
+        var body = sheet.querySelector('.om-acc-body');
+        if (body) body.innerHTML = render();
+        bindEvents();
+        if (scrollEl) scrollEl.scrollTop = scrollTop;
+    }
+
+    var titleIcon = type === 'user' ? 'fa-user' : type === 'char' ? 'fa-masks-theater' : 'fa-bookmark';
+    var titleText = type === 'user' ? (actionWord + '到 User 衣柜') : type === 'char' ? (actionWord + '到角色衣柜') : '复制到预设';
+
+    var sheet = createSheet(
+        '<div class="om-sheet-title"><i class="fa-solid ' + titleIcon + '"></i>' + titleText + '</div>' +
+        '<div class="om-hint" style="margin-bottom:8px">' + count + ' 套穿搭</div>' +
+        '<div class="om-acc-body">' + render() + '</div>'
+    );
+    bindEvents();
 }
 
-// ── 执行移动 ──
-function executeMove(selectedIds, targetType, targetChar, presetIdx, targetCat, targetSub, isCurrentView, onDone) {
+// ── 执行移动/复制 ──
+function executeMove(selectedIds, targetType, targetChar, presetIdx, targetCat, targetSub, isCurrentView, isCopy, onDone) {
     var dd = load();
     var count = selectedIds.length;
 
-    // 收集要移动的 outfit 对象
+    // 收集要操作的 outfit 对象
     var sourceOutfits = [];
     selectedIds.forEach(function (id) {
         var o = getById(dd, id);
@@ -762,7 +812,7 @@ function executeMove(selectedIds, targetType, targetChar, presetIdx, targetCat, 
 
     if (sourceOutfits.length === 0) { toast('未找到穿搭', true); return; }
 
-    if (isCurrentView) {
+    if (isCurrentView && !isCopy) {
         // ── 同视角改分类 ──
         sourceOutfits.forEach(function (o) {
             o.category = targetCat;
@@ -772,7 +822,7 @@ function executeMove(selectedIds, targetType, targetChar, presetIdx, targetCat, 
         var catLabel = targetCat ? (targetSub ? '「' + targetCat + ' > ' + targetSub + '」' : '「' + targetCat + '」') : '无分类';
         toast('✅ 已将 ' + count + ' 套更改为' + catLabel);
     } else if (targetType === 'preset') {
-        // ── 复制到预设 ──
+        // ── 复制到预设（预设始终是复制）──
         var p = dd.presets[presetIdx];
         if (!p) { toast('预设不存在', true); return; }
         if (!p.outfits) p.outfits = [];
@@ -785,6 +835,26 @@ function executeMove(selectedIds, targetType, targetChar, presetIdx, targetCat, 
         });
         save(dd);
         toast('✅ 已复制 ' + count + ' 套到预设「' + (p.name || '预设') + '」');
+    } else if (isCopy) {
+        // ── 复制到目标 ──
+        var targetOutfits2;
+        if (targetType === 'char' && targetChar) {
+            var tcd2 = getCharData(dd, targetChar);
+            targetOutfits2 = tcd2.outfits;
+            if (targetChar !== SHARED_CHAR_KEY && dd.charNames.indexOf(targetChar) === -1) dd.charNames.push(targetChar);
+        } else {
+            targetOutfits2 = dd.outfits;
+        }
+        sourceOutfits.forEach(function (o) {
+            var copy = JSON.parse(JSON.stringify(o));
+            copy.id = genId();
+            copy.category = targetCat;
+            copy.subCategory = targetSub || '';
+            targetOutfits2.push(copy);
+        });
+        save(dd);
+        var destLabel2 = (targetType === 'char' && targetChar) ? (targetChar === SHARED_CHAR_KEY ? SHARED_CHAR_LABEL : targetChar) : 'User';
+        toast('✅ 已复制 ' + count + ' 套到「' + destLabel2 + '」');
     } else {
         // ── 跨视角移动（User↔Char / Char↔Char）──
         // 1) 从源位置删除
@@ -804,8 +874,7 @@ function executeMove(selectedIds, targetType, targetChar, presetIdx, targetCat, 
         if (targetType === 'char' && targetChar) {
             var tcd = getCharData(dd, targetChar);
             targetOutfits = tcd.outfits;
-            // 确保角色名在列表中
-            if (dd.charNames.indexOf(targetChar) === -1) dd.charNames.push(targetChar);
+            if (targetChar !== SHARED_CHAR_KEY && dd.charNames.indexOf(targetChar) === -1) dd.charNames.push(targetChar);
         } else {
             targetOutfits = dd.outfits;
         }
@@ -817,7 +886,7 @@ function executeMove(selectedIds, targetType, targetChar, presetIdx, targetCat, 
         });
 
         save(dd);
-        var destLabel = (targetType === 'char' && targetChar) ? targetChar : 'User';
+        var destLabel = (targetType === 'char' && targetChar) ? (targetChar === SHARED_CHAR_KEY ? SHARED_CHAR_LABEL : targetChar) : 'User';
         toast('✅ 已移动 ' + count + ' 套到「' + destLabel + '」');
     }
 

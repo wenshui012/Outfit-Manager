@@ -11,6 +11,10 @@ export var state = {
     batchSelected: [],
     searchOpen: false,
     searchQuery: '',
+    filterOpen: false,
+    filterNoCat: false,     // 筛选：未分类
+    filterNoTag: false,     // 筛选：无标签
+    filterNoDesc: false,    // 筛选：无描述
     detailOpen: false,
     collapsedGroups: {},
     resolvedImages: {}   // server模式下预解析的图片缓存 { outfitId: { url, dataUrl } }
