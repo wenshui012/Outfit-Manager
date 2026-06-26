@@ -229,6 +229,7 @@ function importData() {
         '<div class="om-modal-title"><i class="fa-solid fa-upload" style="margin-right:6px"></i>导入数据</div>' +
         '<div class="om-hint" style="margin-bottom:10px">选择之前导出的 .json 文件。</div>' +
         '<button class="om-modal-btn" id="om-imp-merge"><i class="fa-solid fa-code-merge" style="margin-right:8px"></i>合并导入<br><small style="opacity:.6;font-weight:400">追加到现有数据，不覆盖</small></button>' +
+        '<button class="om-modal-btn" id="om-imp-update"><i class="fa-solid fa-pen-to-square" style="margin-right:8px"></i>替换同名<br><small style="opacity:.6;font-weight:400">同名穿搭更新，其余追加</small></button>' +
         '<button class="om-modal-btn" id="om-imp-replace"><i class="fa-solid fa-arrows-rotate" style="margin-right:8px"></i>覆盖导入<br><small style="opacity:.6;font-weight:400">替换现有穿搭（预设保留）</small></button>' +
         '<input type="file" id="om-imp-file" accept=".json" style="display:none" />' +
         '<button class="om-modal-cancel" id="om-imp-cancel">取消</button></div>';
@@ -241,6 +242,7 @@ function importData() {
     var importMode = 'merge';
     function triggerImport(mode) { importMode = mode; fileInp.click(); }
     document.getElementById('om-imp-merge').addEventListener('click', function () { triggerImport('merge'); });
+    document.getElementById('om-imp-update').addEventListener('click', function () { triggerImport('update'); });
     document.getElementById('om-imp-replace').addEventListener('click', function () { triggerImport('replace'); });
     fileInp.addEventListener('change', function () {
         var file = fileInp.files[0]; if (!file) return;
@@ -335,6 +337,23 @@ function processImport(imported, mode) {
             dd.presets.push(p); save(dd); fn.renderGrid(); toast('✅ 已导入预设：' + p.name); return;
         }
 
+        // 按名称匹配更新的辅助函数
+        function mergeByName(existing, incoming) {
+            var updated = 0, added = 0;
+            incoming.forEach(function (imp) {
+                var found = false;
+                for (var i = 0; i < existing.length; i++) {
+                    if (existing[i].name && imp.name && existing[i].name === imp.name) {
+                        var keepId = existing[i].id;
+                        Object.assign(existing[i], imp, { id: keepId });
+                        found = true; updated++; break;
+                    }
+                }
+                if (!found) { existing.push(Object.assign({}, imp, { id: genId() })); added++; }
+            });
+            return { updated: updated, added: added };
+        }
+
         if (imported.type === 'char' && imported.charName) {
             var cn = imported.charName;
             if (!dd.chars) dd.chars = {};
@@ -343,6 +362,13 @@ function processImport(imported, mode) {
             var srcC = imported.categories || [];
             if (mode === 'replace') {
                 dd.chars[cn] = { outfits: srcO, categories: srcC, activeIds: [] };
+            } else if (mode === 'update') {
+                var cd0 = getCharData(dd, cn);
+                var r0 = mergeByName(cd0.outfits, imported.outfits || []);
+                srcC.forEach(function (c) { if (cd0.categories.indexOf(c) === -1) cd0.categories.push(c); });
+                if (dd.charNames.indexOf(cn) === -1) dd.charNames.push(cn);
+                save(dd); fn.renderViewbar(); fn.renderCatbar(); fn.renderGrid(); fn.renderBottomStatus();
+                toast('✅ 替换同名完成：更新' + r0.updated + '套，新增' + r0.added + '套'); return;
             } else {
                 var cd = getCharData(dd, cn);
                 srcO.forEach(function (o) { cd.outfits.push(o); });
@@ -365,13 +391,18 @@ function processImport(imported, mode) {
                 var srcC2 = src.categories || [];
                 if (mode === 'replace') {
                     dd.chars[cn] = { outfits: srcO2, categories: srcC2, activeIds: [] };
+                } else if (mode === 'update') {
+                    var cd3 = getCharData(dd, cn);
+                    var r3 = mergeByName(cd3.outfits, src.outfits || []);
+                    srcC2.forEach(function (c) { if (cd3.categories.indexOf(c) === -1) cd3.categories.push(c); });
+                    totalOutfits += r3.updated + r3.added;
                 } else {
                     var cd2 = getCharData(dd, cn);
                     srcO2.forEach(function (o) { cd2.outfits.push(o); });
                     srcC2.forEach(function (c) { if (cd2.categories.indexOf(c) === -1) cd2.categories.push(c); });
+                    totalOutfits += srcO2.length;
                 }
                 if (dd.charNames.indexOf(cn) === -1) dd.charNames.push(cn);
-                totalOutfits += srcO2.length;
             });
             save(dd); fn.renderViewbar(); fn.renderCatbar(); fn.renderGrid(); fn.renderBottomStatus();
             toast('✅ 已导入 ' + importedNames.length + ' 个角色（共 ' + totalOutfits + ' 套穿搭）');
@@ -382,6 +413,29 @@ function processImport(imported, mode) {
         if (mode === 'replace') {
             dd.outfits = srcOutfits.map(function (o) { return Object.assign({}, o, { id: genId() }); });
             dd.categories = srcCats.slice(); dd.activeIds = [];
+        } else if (mode === 'update') {
+            var ru = mergeByName(dd.outfits, srcOutfits);
+            srcCats.forEach(function (c) { if (dd.categories.indexOf(c) === -1) dd.categories.push(c); });
+            if (srcPresets.length > 0) {
+                if (!Array.isArray(dd.presets)) dd.presets = [];
+                srcPresets.forEach(function (p2) { if (p2) dd.presets.push(Object.assign({}, p2, { id: genId() })); });
+            }
+            // update模式下角色数据也按名称匹配
+            if (imported.chars) {
+                if (!dd.chars) dd.chars = {};
+                if (!dd.charNames) dd.charNames = [];
+                var impNames2 = imported.charNames || Object.keys(imported.chars);
+                impNames2.forEach(function (cn) {
+                    var src3 = imported.chars[cn]; if (!src3) return;
+                    var cd4 = getCharData(dd, cn);
+                    mergeByName(cd4.outfits, src3.outfits || []);
+                    (src3.categories || []).forEach(function (c) { if (cd4.categories.indexOf(c) === -1) cd4.categories.push(c); });
+                    if (dd.charNames.indexOf(cn) === -1) dd.charNames.push(cn);
+                });
+            }
+            save(dd); fn.renderViewbar(); fn.renderCatbar(); fn.renderGrid(); fn.renderBottomStatus(); fn.updateBtn();
+            toast('✅ 替换同名完成：更新' + ru.updated + '套，新增' + ru.added + '套');
+            return;
         } else {
             srcOutfits.forEach(function (o) { dd.outfits.push(Object.assign({}, o, { id: genId() })); });
             srcCats.forEach(function (c) { if (dd.categories.indexOf(c) === -1) dd.categories.push(c); });
@@ -391,7 +445,7 @@ function processImport(imported, mode) {
             }
         }
 
-        if (imported.chars) {
+        if (mode !== 'update' && imported.chars) {
             if (!dd.chars) dd.chars = {};
             if (!dd.charNames) dd.charNames = [];
             var impNames = imported.charNames || Object.keys(imported.chars);
