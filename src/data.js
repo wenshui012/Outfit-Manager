@@ -184,11 +184,36 @@ export function partGetAccById(part, id) {
 export function ensureOutfitKits(o) {
     if (!o) return;
     if (!Array.isArray(o.kits)) o.kits = [];
+    for (var i = 0; i < o.kits.length; i++) {
+        var kit = o.kits[i];
+        if (!kit || typeof kit !== 'object') {
+            kit = {};
+            o.kits[i] = kit;
+        }
+        if (!kit.id) kit.id = 'k_' + Date.now().toString(36) + '_' + i;
+        if (!kit.name) kit.name = '套装' + (i + 1);
+        if (!Array.isArray(kit.accIds)) kit.accIds = [];
+        if (!Array.isArray(kit.disabledAccIds)) kit.disabledAccIds = [];
+        var seen = {};
+        kit.accIds = kit.accIds.filter(function (id) {
+            if (!id || seen[id]) return false;
+            seen[id] = true;
+            return true;
+        });
+        var inKit = {};
+        kit.accIds.forEach(function (id) { inKit[id] = true; });
+        var seenDisabled = {};
+        kit.disabledAccIds = kit.disabledAccIds.filter(function (id) {
+            if (!id || !inKit[id] || seenDisabled[id]) return false;
+            seenDisabled[id] = true;
+            return true;
+        });
+    }
     // activeKitId 指向不存在的 kit 时置空
     if (o.activeKitId) {
         var found = false;
-        for (var i = 0; i < o.kits.length; i++) {
-            if (o.kits[i].id === o.activeKitId) { found = true; break; }
+        for (var j = 0; j < o.kits.length; j++) {
+            if (o.kits[j].id === o.activeKitId) { found = true; break; }
         }
         if (!found) o.activeKitId = null;
     }
@@ -224,11 +249,18 @@ export function cleanAccIdFromKits(part, accId) {
     part.outfits.forEach(function (o) {
         if (!Array.isArray(o.kits)) return;
         o.kits.forEach(function (kit) {
-            if (!Array.isArray(kit.accIds)) return;
-            var idx = kit.accIds.indexOf(accId);
-            while (idx !== -1) {
-                kit.accIds.splice(idx, 1);
-                idx = kit.accIds.indexOf(accId);
+            if (Array.isArray(kit.accIds)) {
+                var idx = kit.accIds.indexOf(accId);
+                while (idx !== -1) {
+                    kit.accIds.splice(idx, 1);
+                    idx = kit.accIds.indexOf(accId);
+                }
+            }
+            if (!Array.isArray(kit.disabledAccIds)) return;
+            var didx = kit.disabledAccIds.indexOf(accId);
+            while (didx !== -1) {
+                kit.disabledAccIds.splice(didx, 1);
+                didx = kit.disabledAccIds.indexOf(accId);
             }
         });
     });

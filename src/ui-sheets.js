@@ -2,7 +2,7 @@
 // 操作菜单、编辑面板、预设、设置、分类管理、Lightbox、导入导出、批量描述
 
 import { load, save, loadMeta, saveMeta, loadCurrent, saveCurrent, loadPartition, savePartition, currentPartKey, syncActivePartitions, charNameById, isServerMode } from './db.js';
-import { def, getCharData, getViewOutfits, getViewCategories, getViewActiveIds, setViewActiveIds, getById, getViewById, isActive, getCatNames, getSubCats, findCatObj, hasSubCats, partGetById, partIsActive, partGetAccById, cleanAccIdFromKits, SHARED_CHAR_KEY, SHARED_CHAR_LABEL } from './data.js';
+import { def, getCharData, getViewOutfits, getViewCategories, getViewActiveIds, setViewActiveIds, getById, getViewById, isActive, getCatNames, getSubCats, findCatObj, hasSubCats, partGetById, partIsActive, partGetAccById, cleanAccIdFromKits, getKitAccessories, ensureOutfitKits, SHARED_CHAR_KEY, SHARED_CHAR_LABEL } from './data.js';
 import { genId, esc, toast, getPopupLayer, compressImage } from './utils.js';
 import { generateSingleDescription, batchGenerateDescriptions, openModelPicker, normalizeEndpoint } from './api.js';
 import { state, fn } from './bridge.js';
@@ -321,11 +321,58 @@ function openTagPanel(sceneInput) {
     newInp.addEventListener('keydown', function (e) { if (e.key === 'Enter') sheet.querySelector('#om-tag-add').click(); });
 }
 
+function clearKitDraftIfOutfit(outfitId) {
+    if (state.kitFocusPartKey === currentPartKey() && state.kitFocusOutfitId === outfitId) {
+        state.kitFocusPartKey = null;
+        state.kitFocusOutfitId = null;
+        state.kitDraftAccIds = [];
+        state.kitDraftSourceKitId = null;
+        state.kitDraftDirty = false;
+    }
+}
+
+function buildEditKitManageHtml(outfit, part) {
+    if (!outfit) return '';
+    ensureOutfitKits(outfit);
+    var kits = outfit.kits || [];
+    var body = '';
+    if (kits.length === 0) {
+        body = '<div class="om-kit-empty">暂无套装</div>';
+    } else {
+        body = kits.map(function (kit) {
+            var isActiveKit = outfit.activeKitId === kit.id;
+            var accs = getKitAccessories(part, kit);
+            var accHtml = accs.length === 0
+                ? '<div class="om-kit-empty small">无配饰</div>'
+                : '<div class="om-edit-kit-accs">' + accs.map(function (acc) {
+                    return '<button class="om-edit-kit-acc" data-kit-action="remove-acc" data-kit-id="' + esc(kit.id) + '" data-acc-id="' + esc(acc.id) + '" title="从套装移除">' + esc(acc.name) + '<i class="fa-solid fa-xmark"></i></button>';
+                }).join('') + '</div>';
+            return '<div class="om-edit-kit-row' + (isActiveKit ? ' active' : '') + '" data-kit-id="' + esc(kit.id) + '">' +
+                '<div class="om-edit-kit-main">' +
+                '<div class="om-edit-kit-name">' + esc(kit.name || '未命名套装') + (isActiveKit ? '<span class="om-edit-kit-active">当前</span>' : '') + '</div>' +
+                '<div class="om-edit-kit-count">' + accs.length + ' 个配饰</div>' +
+                accHtml +
+                '</div>' +
+                '<div class="om-edit-kit-actions">' +
+                (!isActiveKit ? '<button class="om-btn-sm" data-kit-action="activate" data-kit-id="' + esc(kit.id) + '" title="设为当前"><i class="fa-solid fa-circle-check"></i></button>' : '') +
+                '<button class="om-btn-sm" data-kit-action="rename" data-kit-id="' + esc(kit.id) + '" title="重命名"><i class="fa-solid fa-pen"></i></button>' +
+                '<button class="om-btn-sm danger" data-kit-action="delete" data-kit-id="' + esc(kit.id) + '" title="删除"><i class="fa-solid fa-trash"></i></button>' +
+                '</div>' +
+                '</div>';
+        }).join('');
+    }
+    return '<div class="om-field" id="om-kit-manage-holder"><label>套装 / 配饰 <span class="om-hint">当前穿搭</span></label>' + body + '</div>';
+}
+
 
 function openEditSheet(outfit, defaultCat, defaultSubCat) {
     var d = load(); // still need for tag suggestions (cross-partition)
-    var editImgData = outfit ? (outfit.imageData || null) : null;
     var curPart = loadCurrent();
+    if (outfit) {
+        outfit = partGetById(curPart, outfit.id) || outfit;
+        ensureOutfitKits(outfit);
+    }
+    var editImgData = outfit ? (outfit.imageData || null) : null;
     var viewCats = curPart.categories || [];
     var catNames = getCatNames(viewCats);
     var catOpts = '<option value="">无分类</option>' +
@@ -338,6 +385,7 @@ function openEditSheet(outfit, defaultCat, defaultSubCat) {
     var subDisplay = subCats.length > 0 ? '' : 'display:none;';
     var subOpts = '<option value="">无子分类</option>' +
         subCats.map(function (sc) { return '<option value="' + esc(sc) + '"' + (sc === curSub ? ' selected' : '') + '>' + esc(sc) + '</option>'; }).join('');
+    var kitManageHtml = outfit ? buildEditKitManageHtml(outfit, curPart) : '';
 
     var sheet = createSheet([
         '<div class="om-sheet-title"><i class="fa-solid fa-' + (outfit ? 'pen' : 'plus') + '"></i>' + (outfit ? '编辑穿搭' : '添加穿搭') + '</div>',
@@ -359,8 +407,95 @@ function openEditSheet(outfit, defaultCat, defaultSubCat) {
         (!outfit ? '<button class="om-btn om-btn-outline" id="om-dbatch" style="font-size:.8em"><i class="fa-solid fa-images"></i> 批量导入</button>' : '') +
         (editImgData ? '<button class="om-btn om-btn-danger" id="om-dclr" style="font-size:.8em">删除图片</button>' : '') + '</div></div>',
         '<input type="file" id="om-dbatchfile" accept="image/*" multiple style="display:none" />',
+        kitManageHtml,
         '<div class="om-edit-foot"><button class="om-btn om-btn-outline" id="om-dcancel">取消</button><button class="om-btn om-btn-safe" id="om-dsave">保存</button></div>',
     ].join(''));
+
+    function findKitById(target, kitId) {
+        ensureOutfitKits(target);
+        for (var ki = 0; ki < target.kits.length; ki++) {
+            if (target.kits[ki].id === kitId) return target.kits[ki];
+        }
+        return null;
+    }
+
+    function refreshKitManageHolder() {
+        if (!outfit) return;
+        var p = loadCurrent();
+        var target = partGetById(p, outfit.id);
+        var holder = sheet.querySelector('#om-kit-manage-holder');
+        if (!target || !holder) return;
+        ensureOutfitKits(target);
+        holder.outerHTML = buildEditKitManageHtml(target, p);
+        bindKitManageEvents();
+    }
+
+    function updateKitManage(mutator) {
+        if (!outfit) return;
+        var p = loadCurrent();
+        var target = partGetById(p, outfit.id);
+        if (!target) { toast('穿搭不存在', true); return; }
+        ensureOutfitKits(target);
+        var changed = mutator(target, p);
+        if (changed === false) return;
+        ensureOutfitKits(target);
+        saveCurrent(p);
+        fn.renderGrid(); fn.renderBottomStatus(); fn.updateBtn();
+        refreshKitManageHolder();
+    }
+
+    function bindKitManageEvents() {
+        var holder = sheet.querySelector('#om-kit-manage-holder');
+        if (!holder) return;
+        holder.querySelectorAll('[data-kit-action]').forEach(function (btn) {
+            btn.addEventListener('click', function (e) {
+                e.preventDefault();
+                e.stopPropagation();
+                var action = btn.dataset.kitAction;
+                var kitId = btn.dataset.kitId;
+                if (action === 'activate') {
+                    updateKitManage(function (target) {
+                        if (!findKitById(target, kitId)) return false;
+                        target.activeKitId = kitId;
+                        clearKitDraftIfOutfit(target.id);
+                        toast('已切换套装');
+                    });
+                } else if (action === 'rename') {
+                    updateKitManage(function (target) {
+                        var kit = findKitById(target, kitId);
+                        if (!kit) return false;
+                        var nm = prompt('套装名称：', kit.name || '');
+                        if (nm === null) return false;
+                        nm = nm.trim();
+                        if (!nm) { toast('名称不能为空', true); return false; }
+                        kit.name = nm;
+                        toast('已重命名');
+                    });
+                } else if (action === 'delete') {
+                    updateKitManage(function (target) {
+                        var kit = findKitById(target, kitId);
+                        if (!kit) return false;
+                        if (!confirm('删除套装「' + (kit.name || '未命名套装') + '」？')) return false;
+                        target.kits = target.kits.filter(function (k) { return k.id !== kitId; });
+                        if (target.activeKitId === kitId) target.activeKitId = target.kits[0] ? target.kits[0].id : null;
+                        clearKitDraftIfOutfit(target.id);
+                        toast('已删除套装');
+                    });
+                } else if (action === 'remove-acc') {
+                    var accId = btn.dataset.accId;
+                    updateKitManage(function (target) {
+                        var kit = findKitById(target, kitId);
+                        if (!kit) return false;
+                        kit.accIds = (kit.accIds || []).filter(function (id) { return id !== accId; });
+                        kit.disabledAccIds = (kit.disabledAccIds || []).filter(function (id) { return id !== accId; });
+                        if (target.activeKitId === kitId) clearKitDraftIfOutfit(target.id);
+                        toast('已从套装移除配饰');
+                    });
+                }
+            });
+        });
+    }
+    bindKitManageEvents();
 
     // 设置默认分类
     if (defaultCat) {
@@ -521,7 +656,7 @@ function openEditSheet(outfit, defaultCat, defaultSubCat) {
             }
         } else {
             // 新增穿搭 - 放入当前 partition
-            var newOutfit = { id: genId(), name: name, category: cat, subCategory: subCat, description: desc, sceneTag: scene, imageData: editImgData, createdAt: Date.now() };
+            var newOutfit = { id: genId(), name: name, category: cat, subCategory: subCat, description: desc, sceneTag: scene, imageData: editImgData, kits: [], activeKitId: null, createdAt: Date.now() };
             curP.outfits.push(newOutfit);
         }
         saveCurrent(curP); closeSheet(sheet); toast('✨ 已保存：' + name); fn.renderCatbar(); fn.renderGrid(); fn.renderBottomStatus(); fn.updateBtn();

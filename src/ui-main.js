@@ -17,6 +17,7 @@ import {
 import {
     getCatNames, getSubCats, hasSubCats,
     partGetById, partIsActive, partGetAccById,
+    getActiveKit, getKitAccessories, ensureOutfitKits,
     SHARED_CHAR_KEY, SHARED_CHAR_LABEL
 } from './data.js';
 import { genId, esc, toast, getPopupLayer } from './utils.js';
@@ -57,6 +58,155 @@ var detailPanelOpen = false;
 // ── 懒加载 ──────────────────────────────────────────────
 var gridImageObserver = null;
 var OM_TRANSPARENT_PIXEL = 'data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///ywAAAAAAQABAAACAUwAOw==';
+
+function uniqueIds(ids) {
+    var result = [];
+    var seen = {};
+    (ids || []).forEach(function (id) {
+        if (!id || seen[id]) return;
+        seen[id] = true;
+        result.push(id);
+    });
+    return result;
+}
+
+function clearKitDraft() {
+    state.kitFocusPartKey = null;
+    state.kitFocusOutfitId = null;
+    state.kitDraftAccIds = [];
+    state.kitDraftSourceKitId = null;
+    state.kitDraftDirty = false;
+}
+
+function isCurrentKitFocus(partKey, outfitId) {
+    return state.kitFocusPartKey === partKey && state.kitFocusOutfitId === outfitId;
+}
+
+function getCurrentFocusContext() {
+    if (!state.kitFocusPartKey || !state.kitFocusOutfitId) return null;
+    var part = loadPartition(state.kitFocusPartKey);
+    var outfit = partGetById(part, state.kitFocusOutfitId);
+    if (!part || !outfit || (part.activeIds || []).indexOf(outfit.id) === -1) {
+        clearKitDraft();
+        return null;
+    }
+    ensureOutfitKits(outfit);
+    return { partKey: state.kitFocusPartKey, part: part, outfit: outfit };
+}
+
+function setKitFocus(partKey, outfitId) {
+    var part = loadPartition(partKey);
+    var outfit = partGetById(part, outfitId);
+    if (!part || !outfit || (part.activeIds || []).indexOf(outfitId) === -1) return false;
+    ensureOutfitKits(outfit);
+    var kit = getActiveKit(outfit);
+    state.kitFocusPartKey = partKey;
+    state.kitFocusOutfitId = outfitId;
+    state.kitDraftAccIds = kit ? uniqueIds(kit.accIds || []) : [];
+    state.kitDraftSourceKitId = kit ? kit.id : null;
+    state.kitDraftDirty = false;
+    return true;
+}
+
+function ensureKitFocusForAccMode(showToast) {
+    if (!state.accMode) return false;
+    var pk = currentPartKey();
+    var ctx = getCurrentFocusContext();
+    if (ctx && ctx.partKey === pk) return true;
+
+    clearKitDraft();
+    var part = loadCurrent();
+    var active = (part.activeIds || []).filter(function (id) { return !!partGetById(part, id); });
+    if (active.length === 1) return setKitFocus(pk, active[0]);
+    if (showToast) {
+        toast(active.length === 0 ? '请先选择一套穿搭' : '当前衣柜有多套已选穿搭，请在底栏点一个主体', true);
+    }
+    return false;
+}
+
+function draftHasAcc(accId) {
+    if (state.kitFocusPartKey !== currentPartKey()) return false;
+    return (state.kitDraftAccIds || []).indexOf(accId) !== -1;
+}
+
+function refreshDetailPanel() {
+    if (!detailPanelOpen) return;
+    var groups = buildDetailGroups();
+    if (groups.length === 0) { closeDetailPanel(); return; }
+    openDetailPanel(groups);
+}
+
+function toggleDraftAcc(accId) {
+    if (!ensureKitFocusForAccMode(true)) {
+        refreshDetailPanel();
+        return;
+    }
+    var ids = uniqueIds(state.kitDraftAccIds || []);
+    var idx = ids.indexOf(accId);
+    if (idx !== -1) ids.splice(idx, 1);
+    else ids.push(accId);
+    state.kitDraftAccIds = ids;
+    state.kitDraftDirty = true;
+    renderGrid();
+    refreshDetailPanel();
+}
+
+function nextKitName(kits) {
+    var n = (kits || []).length + 1;
+    var used = {};
+    (kits || []).forEach(function (kit) { if (kit && kit.name) used[kit.name] = true; });
+    while (used['套装' + n]) n++;
+    return '套装' + n;
+}
+
+function saveFocusedKitDraft() {
+    if (!ensureKitFocusForAccMode(true)) return;
+    var ctx = getCurrentFocusContext();
+    if (!ctx || ctx.partKey !== currentPartKey()) { toast('请先在当前衣柜选择主体', true); return; }
+    ensureOutfitKits(ctx.outfit);
+    var draft = uniqueIds(state.kitDraftAccIds || []).filter(function (id) { return !!partGetAccById(ctx.part, id); });
+    var kit = getActiveKit(ctx.outfit);
+
+    if (!kit) {
+        if (draft.length === 0) { toast('请先选择配饰', true); return; }
+        var autoName = nextKitName(ctx.outfit.kits);
+        var rawName = prompt('套装名称（留空自动命名）：', autoName);
+        if (rawName === null) return;
+        kit = { id: 'k_' + genId(), name: rawName.trim() || autoName, accIds: draft, disabledAccIds: [] };
+        ctx.outfit.kits.push(kit);
+        ctx.outfit.activeKitId = kit.id;
+    } else {
+        kit.accIds = draft;
+        if (!Array.isArray(kit.disabledAccIds)) kit.disabledAccIds = [];
+        kit.disabledAccIds = kit.disabledAccIds.filter(function (id) { return draft.indexOf(id) !== -1; });
+    }
+
+    ensureOutfitKits(ctx.outfit);
+    savePartition(ctx.partKey, ctx.part);
+    setKitFocus(ctx.partKey, ctx.outfit.id);
+    state.kitDraftDirty = false;
+    renderGrid();
+    renderBottomStatus();
+    refreshDetailPanel();
+    toast('已保存套装');
+}
+
+function toggleDisabledAcc(partKey, outfitId, accId) {
+    var part = loadPartition(partKey);
+    var outfit = partGetById(part, outfitId);
+    if (!part || !outfit) return;
+    ensureOutfitKits(outfit);
+    var kit = getActiveKit(outfit);
+    if (!kit || (kit.accIds || []).indexOf(accId) === -1) return;
+    if (!Array.isArray(kit.disabledAccIds)) kit.disabledAccIds = [];
+    var idx = kit.disabledAccIds.indexOf(accId);
+    if (idx !== -1) kit.disabledAccIds.splice(idx, 1);
+    else kit.disabledAccIds.push(accId);
+    ensureOutfitKits(outfit);
+    savePartition(partKey, part);
+    renderBottomStatus();
+    refreshDetailPanel();
+}
 
 function setupGridLazyImages(area) {
     if (gridImageObserver) { gridImageObserver.disconnect(); gridImageObserver = null; }
@@ -106,6 +256,7 @@ function openPopup() {
     state.catDrillParent = null; state.curSubCat = null;
     state.filterOpen = false; state.filterNoCat = false; state.filterNoTag = false; state.filterNoDesc = false;
     state.accMode = false; state.accCat = '__all__'; state.accDrillParent = null; state.accSubCat = null;
+    clearKitDraft();
 
     var meta = loadMeta();
     var isUser = meta.currentView !== 'char';
@@ -175,6 +326,8 @@ function openPopup() {
         saveMeta(m);
         charPanelExpanded = false;
         state.curCat = '__all__'; state.catDrillParent = null; state.curSubCat = null;
+        clearKitDraft();
+        closeDetailPanel();
         var isNowUser = m.currentView !== 'char';
         var vBtn = ov.querySelector('#om-view-toggle');
         if (vBtn) {
@@ -235,6 +388,8 @@ function openPopup() {
     // 配饰栏展开/折叠
     ov.querySelector('#om-acc-toggle').addEventListener('click', function () {
         state.accMode = !state.accMode;
+        if (state.accMode) ensureKitFocusForAccMode(false);
+        else clearKitDraft();
         var btn = ov.querySelector('#om-acc-toggle');
         if (btn) {
             btn.classList.toggle('open', state.accMode);
@@ -244,6 +399,13 @@ function openPopup() {
         }
         renderAccCatbar();
         renderGrid();
+        renderBottomStatus();
+        if (state.accMode) {
+            var groups = buildDetailGroups();
+            if (groups.length > 0) openDetailPanel(groups);
+        } else {
+            closeDetailPanel();
+        }
     });
 
     renderViewbar();
@@ -254,6 +416,7 @@ function openPopup() {
 
 function closePopup() {
     if (gridImageObserver) { gridImageObserver.disconnect(); gridImageObserver = null; }
+    clearKitDraft();
     var ov = document.querySelector('.om-overlay'); if (ov) ov.parentNode.removeChild(ov);
 }
 
@@ -867,6 +1030,7 @@ function renderGrid() {
         if (bdelBtn) bdelBtn.addEventListener('click', function () {
             if (state.batchSelected.length === 0) { toast('请先选择穿搭', true); return; }
             if (!confirm('确定删除已选 ' + state.batchSelected.length + ' 套穿搭？')) return;
+            if (state.kitFocusPartKey === currentPartKey() && state.batchSelected.indexOf(state.kitFocusOutfitId) !== -1) clearKitDraft();
             var curP = loadCurrent();
             curP.outfits = curP.outfits.filter(function (o) { return state.batchSelected.indexOf(o.id) === -1; });
             curP.activeIds = (curP.activeIds || []).filter(function (id) { return state.batchSelected.indexOf(id) === -1; });
@@ -926,6 +1090,7 @@ function renderGrid() {
                 var idx = aids.indexOf(id);
                 if (idx !== -1) aids.splice(idx, 1); else aids.push(id);
                 curP.activeIds = aids;
+                if (idx !== -1 && isCurrentKitFocus(currentPartKey(), id)) clearKitDraft();
 
                 // 通用衣柜 ↔ 单人衣柜互斥
                 var m = loadMeta();
@@ -956,6 +1121,7 @@ function renderGrid() {
 
                 saveCurrent(curP);
                 syncActivePartitions(currentPartKey(), aids);
+                if (idx === -1 && state.accMode) ensureKitFocusForAccMode(false);
                 fn.updateBtn(); renderBottomStatus();
                 preResolveActiveImages();
 
@@ -991,6 +1157,7 @@ function renderGrid() {
 
 // ── 配饰网格渲染 ────────────────────────────────────────
 function renderAccGrid(area, part) {
+    ensureKitFocusForAccMode(false);
     var allAcc = part.accessories || [];
 
     // 按配饰分类过滤
@@ -1024,6 +1191,7 @@ function renderAccGrid(area, part) {
     } else {
         list.forEach(function (a) {
             var imgContent = '';
+            var selected = draftHasAcc(a.id);
             if (a.imageData) {
                 imgContent = '<img class="om-lazy-img" src="' + OM_TRANSPARENT_PIXEL + '" data-acc-id="' + esc(a.id) + '" alt="' + esc(a.name) + '" loading="lazy" decoding="async" />';
             } else {
@@ -1034,9 +1202,10 @@ function renderAccGrid(area, part) {
                     '<i class="fa-solid fa-gem om-noimg-icon"></i>' +
                     '</div>';
             }
-            html += '<div class="om-card' + (a.imageData ? '' : ' no-img') + ' om-acc-card" data-acc-id="' + a.id + '">' +
+            html += '<div class="om-card' + (a.imageData ? '' : ' no-img') + (selected ? ' kit-selected' : '') + ' om-acc-card" data-acc-id="' + a.id + '">' +
                 '<div class="om-card-img">' +
                 imgContent +
+                (selected ? '<div class="om-badge-on om-kit-badge"><i class="fa-solid fa-check"></i></div>' : '') +
                 '<button class="om-card-menu" data-acc-id="' + a.id + '" title="操作"><i class="fa-solid fa-ellipsis-vertical"></i></button>' +
                 '</div>' +
                 '<div class="om-card-info">' +
@@ -1059,13 +1228,12 @@ function renderAccGrid(area, part) {
         fn.openAccEditSheet(null, defCat);
     });
 
-    // 配饰卡片点击 → 打开编辑
+    // 配饰卡片点击 → 临时选择到当前主体草稿
     area.querySelectorAll('.om-acc-card').forEach(function (card) {
         card.addEventListener('click', function (e) {
             if (e.target.closest('.om-card-menu')) return;
             var accId = card.dataset.accId;
-            var acc = partGetAccById(part, accId);
-            if (acc) fn.openAccEditSheet(acc, acc.category || '');
+            toggleDraftAcc(accId);
         });
     });
 
@@ -1168,17 +1336,15 @@ function renderBottomStatus() {
             savePartition(pk2, ap2[pk2]);
             syncActivePartitions(pk2, []);
         }
+        clearKitDraft();
         fn.updateBtn(); renderBottomStatus(); renderGrid(); closeDetailPanel();
         toast('已取消全部选择');
     });
 }
 
 // ── 选择详情面板 ─────────────────────────────────────────
-function toggleDetailPanel() {
-    if (detailPanelOpen) { closeDetailPanel(); return; }
-    var meta = loadMeta();
+function buildDetailGroups() {
     var activeParts = loadActivePartitions();
-
     var groups = [];
     for (var pk in activeParts) {
         var ap = activeParts[pk];
@@ -1190,10 +1356,16 @@ function toggleDetailPanel() {
         var items = [];
         (ap.activeIds || []).forEach(function (id) {
             var o = partGetById(ap, id);
-            if (o) items.push({ id: id, name: o.name, partKey: pk });
+            if (o) items.push({ id: id, name: o.name, partKey: pk, outfit: o });
         });
-        if (items.length > 0) groups.push({ owner: ownerName, items: items });
+        if (items.length > 0) groups.push({ owner: ownerName, partKey: pk, part: ap, items: items });
     }
+    return groups;
+}
+
+function toggleDetailPanel() {
+    if (detailPanelOpen) { closeDetailPanel(); return; }
+    var groups = buildDetailGroups();
     if (groups.length === 0) return;
     openDetailPanel(groups);
 }
@@ -1208,14 +1380,44 @@ function openDetailPanel(groups) {
     panel.style.cssText = 'position:absolute;bottom:100%;left:0;right:0;z-index:10;';
 
     var html = '<div class="om-detail-handle"></div>';
+    var curPK = currentPartKey();
     groups.forEach(function (g) {
         html += '<div class="om-detail-title" style="margin-top:4px">' + esc(g.owner) + '</div>';
-        html += '<div class="om-detail-tags">';
+        var looseHtml = '';
+        var rowHtml = '';
         g.items.forEach(function (w) {
-            html += '<span class="om-detail-tag">' + esc(w.name) +
-                '<button class="om-detail-tag-x" data-id="' + w.id + '" data-pk="' + esc(w.partKey) + '">&#x2715;</button></span>';
+            ensureOutfitKits(w.outfit);
+            var focused = isCurrentKitFocus(w.partKey, w.id);
+            var useDraft = state.accMode && focused && w.partKey === curPK;
+            var kit = getActiveKit(w.outfit);
+            var accs = [];
+            if (useDraft) {
+                (state.kitDraftAccIds || []).forEach(function (aid) {
+                    var draftAcc = partGetAccById(g.part, aid);
+                    if (draftAcc) accs.push(draftAcc);
+                });
+            } else if (kit) {
+                accs = getKitAccessories(g.part, kit);
+            }
+
+            var subjectTag = '<span class="om-detail-tag om-subject-tag' + (focused ? ' focus' : '') + '" data-focus-id="' + esc(w.id) + '" data-pk="' + esc(w.partKey) + '">' +
+                esc(w.name) + '<button class="om-detail-tag-x" data-id="' + esc(w.id) + '" data-pk="' + esc(w.partKey) + '">&#x2715;</button></span>';
+
+            if (useDraft || (kit && accs.length > 0)) {
+                rowHtml += '<div class="om-kit-row' + (focused ? ' focus' : '') + '">' + subjectTag + '<div class="om-kit-accs">';
+                accs.forEach(function (acc) {
+                    var disabled = !useDraft && kit && Array.isArray(kit.disabledAccIds) && kit.disabledAccIds.indexOf(acc.id) !== -1;
+                    rowHtml += '<button class="om-kit-acc-tag' + (disabled ? ' disabled' : '') + '" data-pk="' + esc(w.partKey) + '" data-outfit-id="' + esc(w.id) + '" data-acc-id="' + esc(acc.id) + '" data-draft="' + (useDraft ? '1' : '0') + '">' + esc(acc.name) + '</button>';
+                });
+                rowHtml += '</div>';
+                if (useDraft) rowHtml += '<button class="om-kit-save" data-save-kit="1">保存套装</button>';
+                rowHtml += '</div>';
+            } else {
+                looseHtml += subjectTag;
+            }
         });
-        html += '</div>';
+        if (rowHtml) html += '<div class="om-kit-rows">' + rowHtml + '</div>';
+        if (looseHtml) html += '<div class="om-detail-tags">' + looseHtml + '</div>';
     });
     panel.innerHTML = html;
     bottombar.appendChild(panel);
@@ -1227,11 +1429,39 @@ function openDetailPanel(groups) {
             var targetPart = loadPartition(pk);
             var ai = (targetPart.activeIds || []).indexOf(id);
             if (ai !== -1) targetPart.activeIds.splice(ai, 1);
+            if (isCurrentKitFocus(pk, id)) clearKitDraft();
             savePartition(pk, targetPart);
             syncActivePartitions(pk, targetPart.activeIds);
             fn.updateBtn(); renderBottomStatus(); renderGrid();
             preResolveActiveImages();
             closeDetailPanel();
+        });
+    });
+    panel.querySelectorAll('.om-subject-tag').forEach(function (tag) {
+        tag.addEventListener('click', function (e) {
+            if (e.target.closest('.om-detail-tag-x')) return;
+            if (!state.accMode) return;
+            var pk = tag.dataset.pk;
+            var id = tag.dataset.focusId;
+            if (pk !== currentPartKey()) { toast('只能为当前衣柜搭配配饰', true); return; }
+            if (setKitFocus(pk, id)) {
+                renderGrid();
+                refreshDetailPanel();
+            }
+        });
+    });
+    panel.querySelectorAll('.om-kit-acc-tag').forEach(function (btn) {
+        btn.addEventListener('click', function (e) {
+            e.stopPropagation();
+            var accId = btn.dataset.accId;
+            if (btn.dataset.draft === '1') toggleDraftAcc(accId);
+            else toggleDisabledAcc(btn.dataset.pk, btn.dataset.outfitId, accId);
+        });
+    });
+    panel.querySelectorAll('[data-save-kit]').forEach(function (btn) {
+        btn.addEventListener('click', function (e) {
+            e.stopPropagation();
+            saveFocusedKitDraft();
         });
     });
     setTimeout(function () {

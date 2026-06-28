@@ -216,6 +216,10 @@ function tryInjectBody(bodyStr) {
         var kit = getActiveKit(outfit);
         if (!kit) return '';
         var accs = getKitAccessories(partition, kit);
+        var disabled = Array.isArray(kit.disabledAccIds) ? kit.disabledAccIds : [];
+        if (disabled.length > 0) {
+            accs = accs.filter(function (acc) { return disabled.indexOf(acc.id) === -1; });
+        }
         if (accs.length === 0) return '';
         // 按 category 字母排序保证注入顺序固定
         accs.sort(function (a, b) {

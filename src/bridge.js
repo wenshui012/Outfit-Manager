@@ -17,7 +17,12 @@ export var state = {
     filterNoDesc: false,    // 筛选：无描述
     detailOpen: false,
     collapsedGroups: {},
-    resolvedImages: {}   // server模式下预解析的图片缓存 { outfitId: { url, dataUrl } }
+    resolvedImages: {},   // server模式下预解析的图片缓存 { outfitId: { url, dataUrl } }
+    kitFocusPartKey: null,
+    kitFocusOutfitId: null,
+    kitDraftAccIds: [],
+    kitDraftSourceKitId: null,
+    kitDraftDirty: false
 };
 
 // 函数注册表：各模块把自己的函数注册进来，其他模块通过 fn.xxx() 调用
