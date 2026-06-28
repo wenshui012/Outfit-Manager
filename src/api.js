@@ -1,8 +1,8 @@
 // ── 穿搭管理器 · API 调用 ──────────────────────────────────
 // Vision API、模型选择、批量描述生成
 
-import { load, save, resolveImageForExternal } from './db.js';
-import { getById } from './data.js';
+import { load, save, loadMeta, loadCurrent, saveCurrent, loadPartition, savePartition, currentPartKey, resolveImageForExternal } from './db.js';
+import { getById, partGetById } from './data.js';
 import { toast, getPopupLayer, esc } from './utils.js';
 
 // ── 端点规范化 ─────────────────────────────────────────
@@ -152,11 +152,15 @@ export function callVisionAPI(apiCfg, image, systemPrompt, cb) {
 
 // ── 批量生成描述（并发队列）─────────────────────────────
 export function batchGenerateDescriptions(outfitIds, options, progressCb, doneCb) {
-    var d = load();
-    var apiCfg = d.apiVision;
+    var meta = loadMeta();
+    var apiCfg = meta.apiVision;
+    // 固定源分包 key：后台运行时用户可能切换视角/预设，
+    // 回调必须写回启动时的分包，不能跟随 currentPartKey() 漂移
+    var sourcePartKey = currentPartKey();
+    var srcPart = loadPartition(sourcePartKey);
     var queue = [];
     outfitIds.forEach(function (id) {
-        var o = getById(d, id);
+        var o = partGetById(srcPart, id);
         if (!o || !o.imageData) return;
         if (o.description && o.description.trim() && !apiCfg.overwrite) return;
         queue.push({ id: id, name: o.name, dataUrl: o.imageData });
@@ -194,7 +198,9 @@ export function batchGenerateDescriptions(outfitIds, options, progressCb, doneCb
                             errors.push({ name: item.name, error: 'API 返回了空内容' });
                         } else {
                             var parsed = parseAIResponse(text);
-                            var o = getById(load(), item.id);
+                            // 用固定的 sourcePartKey 读写，不受用户切换视角影响
+                            var cp = loadPartition(sourcePartKey);
+                            var o = partGetById(cp, item.id);
                             if (!o) { errors.push({ name: item.name, error: '未找到穿搭数据' }); }
                             else {
                                 if (parsed && parsed.description) {
@@ -203,7 +209,7 @@ export function batchGenerateDescriptions(outfitIds, options, progressCb, doneCb
                                 } else {
                                     o.description = text;
                                 }
-                                save(load());
+                                savePartition(sourcePartKey, cp);
                             }
                         }
                         if (progressCb) progressCb(done, total, errors.length > 0 && errors[errors.length - 1].name === item.name ? '❌ ' + item.name : '✅ ' + item.name);
@@ -220,8 +226,8 @@ export function batchGenerateDescriptions(outfitIds, options, progressCb, doneCb
 
 // ── 单套描述生成（返回结构化数据）───────────────────────
 export function generateSingleDescription(outfit, cb) {
-    var d = load();
-    var apiCfg = d.apiVision;
+    var meta = loadMeta();
+    var apiCfg = meta.apiVision;
     if (!apiCfg.endpoint || !apiCfg.key || !apiCfg.model) { cb('请先在设置中配置描述API'); return; }
     if (!outfit.imageData) { cb('该穿搭没有图片'); return; }
     // server 模式下图片可能是后端 URL，外部 AI 无法访问，需要先 resolve 为 base64

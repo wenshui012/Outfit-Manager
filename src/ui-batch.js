@@ -1,8 +1,8 @@
 // ── 穿搭管理器 · 批量操作与导入导出 ──────────────────────
 // 批量标签、批量导入、批量AI生成、数据导出导入
 
-import { load, save, isServerMode, batchResolveImages, uploadImage, getImageUrlPrefix } from './db.js';
-import { getCharData, getViewOutfits, getViewCategories, getById, getCatNames, getSubCats, SHARED_CHAR_KEY, SHARED_CHAR_LABEL } from './data.js';
+import { load, save, loadMeta, loadCurrent, saveCurrent, loadPartition, savePartition, currentPartKey, currentUserPartKey, syncActivePartitions, isServerMode, batchResolveImages, uploadImage, getImageUrlPrefix } from './db.js';
+import { getCharData, getViewOutfits, getViewCategories, getById, getCatNames, getSubCats, partGetById, SHARED_CHAR_KEY, SHARED_CHAR_LABEL } from './data.js';
 import { genId, esc, toast, getPopupLayer, compressImage } from './utils.js';
 import { batchGenerateDescriptions } from './api.js';
 import { state, fn } from './bridge.js';
@@ -65,10 +65,9 @@ function openBatchTagPanel(selectedIds, onDone) {
     }
 
     function applyTag(tag) {
-        var dd = load();
-        var vo = getViewOutfits(dd);
-        vo.forEach(function (o) { if (selectedIds.indexOf(o.id) !== -1) o.sceneTag = tag; });
-        save(dd); closeSheet(sheet);
+        var curP = loadCurrent();
+        curP.outfits.forEach(function (o) { if (selectedIds.indexOf(o.id) !== -1) o.sceneTag = tag; });
+        saveCurrent(curP); closeSheet(sheet);
         toast('✅ 已设置标签：' + tag);
         if (onDone) onDone();
     }
@@ -88,10 +87,9 @@ function openBatchTagPanel(selectedIds, onDone) {
 
     // 清除标签
     sheet.querySelector('#om-btag-clear').addEventListener('click', function () {
-        var dd = load();
-        var vo = getViewOutfits(dd);
-        vo.forEach(function (o) { if (selectedIds.indexOf(o.id) !== -1) o.sceneTag = ''; });
-        save(dd); closeSheet(sheet);
+        var curP = loadCurrent();
+        curP.outfits.forEach(function (o) { if (selectedIds.indexOf(o.id) !== -1) o.sceneTag = ''; });
+        saveCurrent(curP); closeSheet(sheet);
         toast('✅ 已清除 ' + count + ' 套穿搭的标签');
         if (onDone) onDone();
     });
@@ -391,6 +389,7 @@ function processImport(imported, mode) {
                 var srcC2 = src.categories || [];
                 if (mode === 'replace') {
                     dd.chars[cn] = { outfits: srcO2, categories: srcC2, activeIds: [] };
+                    totalOutfits += srcO2.length;
                 } else if (mode === 'update') {
                     var cd3 = getCharData(dd, cn);
                     var r3 = mergeByName(cd3.outfits, src.outfits || []);
@@ -409,71 +408,100 @@ function processImport(imported, mode) {
             return;
         }
 
-        var srcOutfits = imported.outfits || [], srcCats = imported.categories || [], srcPresets = imported.presets || [];
+        // ── User 穿搭导入：直接写当前 User partition，不经过 save(dd) ──
+        // save(dd) 的 presets 同步会把旧 dd.presets 写回各预设 partition，
+        // 如果当前 activePresetId 指向某个预设，刚导入的数据会被旧快照覆盖。
+        // 所以 User 穿搭导入走 partition API 直接写入。
+        var srcOutfits = imported.outfits || [], srcCats = imported.categories || [];
+        var userPK = currentUserPartKey();
+        var userPart = loadPartition(userPK);
+
         if (mode === 'replace') {
-            dd.outfits = srcOutfits.map(function (o) { return Object.assign({}, o, { id: genId() }); });
-            dd.categories = srcCats.slice(); dd.activeIds = [];
+            userPart.outfits = srcOutfits.map(function (o) { return Object.assign({}, o, { id: genId() }); });
+            userPart.categories = srcCats.slice();
+            userPart.activeIds = [];
         } else if (mode === 'update') {
-            var ru = mergeByName(dd.outfits, srcOutfits);
-            srcCats.forEach(function (c) { if (dd.categories.indexOf(c) === -1) dd.categories.push(c); });
-            if (srcPresets.length > 0) {
-                if (!Array.isArray(dd.presets)) dd.presets = [];
-                srcPresets.forEach(function (p2) { if (p2) dd.presets.push(Object.assign({}, p2, { id: genId() })); });
-            }
-            // update模式下角色数据也按名称匹配
+            var ru = mergeByName(userPart.outfits, srcOutfits);
+            srcCats.forEach(function (c) {
+                var catNames2 = getCatNames(userPart.categories);
+                if (catNames2.indexOf(typeof c === 'object' ? c.name : c) === -1) userPart.categories.push(c);
+            });
+            // update模式下角色数据走兼容层
             if (imported.chars) {
-                if (!dd.chars) dd.chars = {};
-                if (!dd.charNames) dd.charNames = [];
+                var dd2 = load();
+                if (!dd2.chars) dd2.chars = {};
+                if (!dd2.charNames) dd2.charNames = [];
                 var impNames2 = imported.charNames || Object.keys(imported.chars);
                 impNames2.forEach(function (cn) {
                     var src3 = imported.chars[cn]; if (!src3) return;
-                    var cd4 = getCharData(dd, cn);
+                    var cd4 = getCharData(dd2, cn);
                     mergeByName(cd4.outfits, src3.outfits || []);
                     (src3.categories || []).forEach(function (c) { if (cd4.categories.indexOf(c) === -1) cd4.categories.push(c); });
-                    if (dd.charNames.indexOf(cn) === -1) dd.charNames.push(cn);
+                    if (dd2.charNames.indexOf(cn) === -1) dd2.charNames.push(cn);
                 });
+                save(dd2);
             }
-            save(dd); fn.renderViewbar(); fn.renderCatbar(); fn.renderGrid(); fn.renderBottomStatus(); fn.updateBtn();
+            // 先写 User partition 再刷新
+            savePartition(userPK, userPart);
+            syncActivePartitions(userPK, userPart.activeIds);
+            fn.renderViewbar(); fn.renderCatbar(); fn.renderGrid(); fn.renderBottomStatus(); fn.updateBtn();
             toast('✅ 替换同名完成：更新' + ru.updated + '套，新增' + ru.added + '套');
             return;
         } else {
-            srcOutfits.forEach(function (o) { dd.outfits.push(Object.assign({}, o, { id: genId() })); });
-            srcCats.forEach(function (c) { if (dd.categories.indexOf(c) === -1) dd.categories.push(c); });
-            if (srcPresets.length > 0) {
-                if (!Array.isArray(dd.presets)) dd.presets = [];
-                srcPresets.forEach(function (p2) { if (p2) dd.presets.push(Object.assign({}, p2, { id: genId() })); });
-            }
+            // append 模式
+            srcOutfits.forEach(function (o) { userPart.outfits.push(Object.assign({}, o, { id: genId() })); });
+            srcCats.forEach(function (c) {
+                var catNames3 = getCatNames(userPart.categories);
+                if (catNames3.indexOf(typeof c === 'object' ? c.name : c) === -1) userPart.categories.push(c);
+            });
         }
 
+        // 写入 User partition
+        savePartition(userPK, userPart);
+        syncActivePartitions(userPK, userPart.activeIds);
+
+        // 预设导入（如果有的话）仍走兼容层
+        var srcPresets = imported.presets || [];
+        if (srcPresets.length > 0) {
+            var dd3 = load();
+            if (!Array.isArray(dd3.presets)) dd3.presets = [];
+            srcPresets.forEach(function (p2) { if (p2) dd3.presets.push(Object.assign({}, p2, { id: genId() })); });
+            save(dd3);
+        }
+
+        // 角色数据导入（replace/append，非 update）走兼容层
         if (mode !== 'update' && imported.chars) {
-            if (!dd.chars) dd.chars = {};
-            if (!dd.charNames) dd.charNames = [];
+            var dd4 = load();
+            if (!dd4.chars) dd4.chars = {};
+            if (!dd4.charNames) dd4.charNames = [];
             var impNames = imported.charNames || Object.keys(imported.chars);
             impNames.forEach(function (cn) {
                 var src2 = imported.chars[cn]; if (!src2) return;
-                dd.chars[cn] = {
+                dd4.chars[cn] = {
                     outfits: (src2.outfits || []).map(function (o) { return Object.assign({}, o, { id: genId() }); }),
                     categories: src2.categories || [],
                     activeIds: []
                 };
-                if (dd.charNames.indexOf(cn) === -1) dd.charNames.push(cn);
+                if (dd4.charNames.indexOf(cn) === -1) dd4.charNames.push(cn);
             });
+            save(dd4);
         }
 
-        save(dd); fn.renderViewbar(); fn.renderCatbar(); fn.renderGrid(); fn.renderBottomStatus(); fn.updateBtn();
-        toast('✅ 导入成功：' + dd.outfits.length + ' 套穿搭');
+        fn.renderViewbar(); fn.renderCatbar(); fn.renderGrid(); fn.renderBottomStatus(); fn.updateBtn();
+        toast('✅ 导入成功：' + userPart.outfits.length + ' 套穿搭');
     } catch (err) { toast('导入处理失败：' + err.message, true); }
 }
 
 // ── 批量导入弹窗 ─────────────────────────────────────────
 function openBatchImportModal(files) {
-    var d = load();
+    var curPart = loadCurrent();
+    var meta = loadMeta();
     var curCat = (state.curCat && state.curCat !== '__all__') ? state.curCat : '';
-    var viewCats = getViewCategories(d);
+    var viewCats = curPart.categories || [];
     var catNames = getCatNames(viewCats);
     var catOpts = '<option value="">未分类</option>' +
         catNames.map(function (c) { return '<option value="' + esc(c) + '"' + (c === curCat ? ' selected' : '') + '>' + esc(c) + '</option>'; }).join('');
-    var hasApi = !!(d.apiVision.endpoint && d.apiVision.key && d.apiVision.model);
+    var hasApi = !!(meta.apiVision.endpoint && meta.apiVision.key && meta.apiVision.model);
 
     var modal = document.createElement('div');
     modal.className = 'om-modal';
@@ -549,7 +577,7 @@ function openBatchImportModal(files) {
             var reader = new FileReader();
             reader.onload = function (e) {
                 compressImage(e.target.result, function (compressed) {
-                    var dd = load();
+                    var curP = loadCurrent();
                     var id = genId();
                     var newOutfit = {
                         id: id,
@@ -560,12 +588,8 @@ function openBatchImportModal(files) {
                         imageData: compressed,
                         createdAt: Date.now()
                     };
-                    if (dd.currentView === 'char' && dd.currentChar) {
-                        getCharData(dd, dd.currentChar).outfits.push(newOutfit);
-                    } else {
-                        dd.outfits.push(newOutfit);
-                    }
-                    save(dd);
+                    curP.outfits.push(newOutfit);
+                    saveCurrent(curP);
                     newIds.push(id);
                     imported++;
                     compressNext(i + 1);
@@ -580,10 +604,11 @@ function openBatchImportModal(files) {
 
 // ── 批量 AI 生成描述弹窗 ──────────────────────────────────
 function openBatchDescModal(ids) {
-    var d = load();
-    var withImg = ids.filter(function (id) { var o = getById(d, id); return o && o.imageData; });
+    var meta = loadMeta();
+    var curP = loadCurrent();
+    var withImg = ids.filter(function (id) { var o = partGetById(curP, id); return o && o.imageData; });
     var skipCount = ids.length - withImg.length;
-    var willSkipDesc = withImg.filter(function (id) { var o = getById(d, id); return o && o.description && o.description.trim() && !d.apiVision.overwrite; }).length;
+    var willSkipDesc = withImg.filter(function (id) { var o = partGetById(curP, id); return o && o.description && o.description.trim() && !meta.apiVision.overwrite; }).length;
     var modal = document.createElement('div');
     modal.className = 'om-modal';
     modal.style.setProperty('z-index', '2147483647', 'important');

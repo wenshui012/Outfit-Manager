@@ -115,6 +115,20 @@ export function injectStyles() {
             '.om-catbtn-back{padding:5px 12px 5px 4px;border:none;background:none;opacity:.5;font-size:.9em;flex-shrink:0;}',
             '.om-catbtn-back:hover{opacity:1;color:var(--SmartThemeQuoteColor,#7c6daf);}',
 
+            /* ══ 分类栏容器（catbar + 展开按钮）══ */
+            '.om-catbar-wrap{display:flex;align-items:center;flex-shrink:0;border-bottom:1px solid rgba(127,127,127,.08);}',
+            '.om-catbar-wrap .om-catbar{flex:1;border-bottom:none;}',
+            '.om-acc-toggle{background:none;border:none;border-left:1px solid rgba(127,127,127,.1);',
+            'color:inherit;cursor:pointer;padding:6px 10px;font-size:.72em;opacity:.4;transition:.15s;flex-shrink:0;}',
+            '.om-acc-toggle:hover,.om-acc-toggle.open{opacity:.85;color:var(--SmartThemeQuoteColor,#7c6daf);}',
+
+            /* ══ 配饰分类栏 ══ */
+            '.om-acc-catbar{display:none;gap:6px;padding:6px 15px;overflow-x:auto;flex-wrap:nowrap;flex-shrink:0;',
+            '-webkit-overflow-scrolling:touch;scrollbar-width:none;align-items:center;',
+            'border-bottom:1px solid rgba(127,127,127,.08);background:rgba(124,109,175,.04);}',
+            '.om-acc-catbar::-webkit-scrollbar{display:none;}',
+            '.om-acc-catbar-label{font-size:.7em;opacity:.45;flex-shrink:0;margin-right:2px;}',
+
             /* ══ 网格区（独立滚动）══ */
             '.om-grid-area{flex:1;overflow-y:auto;padding:12px 12px 8px;}',
             '.om-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(108px,1fr));gap:9px;}',

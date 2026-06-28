@@ -1,8 +1,8 @@
 // ── 穿搭管理器 · 弹出面板 ──────────────────────────────────
 // 操作菜单、编辑面板、预设、设置、分类管理、Lightbox、导入导出、批量描述
 
-import { load, save, isServerMode } from './db.js';
-import { def, getCharData, getViewOutfits, getViewCategories, getViewActiveIds, setViewActiveIds, getById, getViewById, isActive, getCatNames, getSubCats, findCatObj, hasSubCats, SHARED_CHAR_KEY, SHARED_CHAR_LABEL } from './data.js';
+import { load, save, loadMeta, saveMeta, loadCurrent, saveCurrent, loadPartition, savePartition, currentPartKey, syncActivePartitions, charNameById, isServerMode } from './db.js';
+import { def, getCharData, getViewOutfits, getViewCategories, getViewActiveIds, setViewActiveIds, getById, getViewById, isActive, getCatNames, getSubCats, findCatObj, hasSubCats, partGetById, partIsActive, partGetAccById, cleanAccIdFromKits, SHARED_CHAR_KEY, SHARED_CHAR_LABEL } from './data.js';
 import { genId, esc, toast, getPopupLayer, compressImage } from './utils.js';
 import { generateSingleDescription, batchGenerateDescriptions, openModelPicker, normalizeEndpoint } from './api.js';
 import { state, fn } from './bridge.js';
@@ -10,8 +10,8 @@ import { state, fn } from './bridge.js';
 // ── 长按操作菜单 Bottom Sheet ─────────────────────────────
 function openContextMenu(outfit, imgOutfits) {
     if (!outfit) return;
-    var d = load();
-    var isOn = isActive(d, outfit.id);
+    var part = loadCurrent();
+    var isOn = partIsActive(part, outfit.id);
 
     var sheet = createSheet([
         '<div class="om-ctx-outfit-name"><i class="fa-solid fa-shirt" style="margin-right:6px;opacity:.5;"></i>' + esc(outfit.name) + '</div>',
@@ -28,12 +28,43 @@ function openContextMenu(outfit, imgOutfits) {
     var wearEl = sheet.querySelector('#om-ctx-wear');
     if (wearEl) wearEl.addEventListener('click', function () {
         closeSheet(sheet);
-        var dd = load();
-        var aids = getViewActiveIds(dd);
+        var curP = loadCurrent();
+        var aids = curP.activeIds || [];
         var idx = aids.indexOf(outfit.id);
         if (idx !== -1) aids.splice(idx, 1); else aids.push(outfit.id);
-        setViewActiveIds(dd, aids);
-        save(dd); fn.updateBtn(); fn.renderBottomStatus(); fn.renderGrid();
+        curP.activeIds = aids;
+
+        // 通用衣柜 ↔ 单人衣柜互斥（和 ui-main.js 卡片点击逻辑一致）
+        var m = loadMeta();
+        if (m.currentView === 'char' && idx === -1) {
+            // idx === -1 说明是新增激活（不是取消）
+            if (m.currentChar === SHARED_CHAR_KEY) {
+                // 在通用衣柜激活 → 清空所有单人衣柜
+                (m.charIndex || []).forEach(function (ci) {
+                    if (ci.id !== SHARED_CHAR_KEY) {
+                        var cp = loadPartition(ci.partKey);
+                        if (cp.activeIds && cp.activeIds.length > 0) {
+                            cp.activeIds = [];
+                            savePartition(ci.partKey, cp);
+                            syncActivePartitions(ci.partKey, []);
+                        }
+                    }
+                });
+            } else {
+                // 在单人衣柜激活 → 清空通用衣柜
+                var sharedPK = 'char:' + SHARED_CHAR_KEY;
+                var sp = loadPartition(sharedPK);
+                if (sp.activeIds && sp.activeIds.length > 0) {
+                    sp.activeIds = [];
+                    savePartition(sharedPK, sp);
+                    syncActivePartitions(sharedPK, []);
+                }
+            }
+        }
+
+        saveCurrent(curP);
+        syncActivePartitions(currentPartKey(), aids);
+        fn.updateBtn(); fn.renderBottomStatus(); fn.renderGrid();
         if (fn.preResolveActiveImages) fn.preResolveActiveImages();
         fn.closeDetailPanel();
     });
@@ -61,8 +92,8 @@ function openContextMenu(outfit, imgOutfits) {
 
     var aidescEl = sheet.querySelector('#om-ctx-aidesc');
     if (aidescEl) aidescEl.addEventListener('click', function () {
-        var dd = load();
-        if (!dd.apiVision.endpoint || !dd.apiVision.key || !dd.apiVision.model) {
+        var m = loadMeta();
+        if (!m.apiVision.endpoint || !m.apiVision.key || !m.apiVision.model) {
             toast('请先在设置中配置"描述生成 API"', true); closeSheet(sheet); return;
         }
         aidescEl.innerHTML = '<i class="fa-solid fa-spinner fa-spin"></i>生成中...';
@@ -70,11 +101,12 @@ function openContextMenu(outfit, imgOutfits) {
         generateSingleDescription(outfit, function (err, result) {
             closeSheet(sheet);
             if (err) { toast('生成失败：' + err, true); return; }
-            var dd2 = load(); var o = getById(dd2, outfit.id);
+            var curP = loadCurrent();
+            var o = partGetById(curP, outfit.id);
             if (o) {
                 if (result.description) o.description = result.description;
                 if (result.name && result.name.trim()) o.name = result.name.trim();
-                save(dd2);
+                saveCurrent(curP);
             }
             toast('✅ 已生成：' + (o ? o.name : outfit.name));
             fn.renderGrid();
@@ -85,12 +117,13 @@ function openContextMenu(outfit, imgOutfits) {
     if (delEl) delEl.addEventListener('click', function () {
         closeSheet(sheet);
         if (!confirm('确定删除「' + outfit.name + '」？')) return;
-        var dd = load();
-        dd.outfits = dd.outfits.filter(function (o) { return o.id !== outfit.id; });
-        // 也从chars中查找并删除
-        if (dd.chars) { for (var cn in dd.chars) { dd.chars[cn].outfits = (dd.chars[cn].outfits || []).filter(function (o) { return o.id !== outfit.id; }); var cai = (dd.chars[cn].activeIds || []).indexOf(outfit.id); if (cai !== -1) dd.chars[cn].activeIds.splice(cai, 1); } }
-        var ai = (dd.activeIds || []).indexOf(outfit.id); if (ai !== -1) dd.activeIds.splice(ai, 1);
-        save(dd); fn.updateBtn(); fn.renderBottomStatus(); fn.renderGrid(); toast('已删除');
+        var curP = loadCurrent();
+        curP.outfits = curP.outfits.filter(function (o) { return o.id !== outfit.id; });
+        var ai = (curP.activeIds || []).indexOf(outfit.id);
+        if (ai !== -1) curP.activeIds.splice(ai, 1);
+        saveCurrent(curP);
+        syncActivePartitions(currentPartKey(), curP.activeIds);
+        fn.updateBtn(); fn.renderBottomStatus(); fn.renderGrid(); toast('已删除');
     });
 }
 
@@ -290,9 +323,10 @@ function openTagPanel(sceneInput) {
 
 
 function openEditSheet(outfit, defaultCat, defaultSubCat) {
-    var d = load();
+    var d = load(); // still need for tag suggestions (cross-partition)
     var editImgData = outfit ? (outfit.imageData || null) : null;
-    var viewCats = getViewCategories(d);
+    var curPart = loadCurrent();
+    var viewCats = curPart.categories || [];
     var catNames = getCatNames(viewCats);
     var catOpts = '<option value="">无分类</option>' +
         catNames.map(function (c) { return '<option value="' + esc(c) + '"' + (outfit && outfit.category === c ? ' selected' : '') + '>' + esc(c) + '</option>'; }).join('');
@@ -477,34 +511,20 @@ function openEditSheet(outfit, defaultCat, defaultSubCat) {
         var subCat = sheet.querySelector('#om-dsubcat').value;
         var desc = sheet.querySelector('#om-ddesc').value.trim();
         var scene = sheet.querySelector('#om-dscene').value.trim();
-        var dd = load();
+        var curP = loadCurrent();
         if (outfit) {
-            // 编辑已有穿搭 - 在所有数据中查找
-            var found = false;
-            for (var i = 0; i < dd.outfits.length; i++) {
-                if (dd.outfits[i].id === outfit.id) {
-                    Object.assign(dd.outfits[i], { name: name, category: cat, subCategory: subCat, description: desc, sceneTag: scene, imageData: editImgData }); found = true; break;
-                }
-            }
-            if (!found && dd.chars) {
-                for (var cn in dd.chars) {
-                    var co = dd.chars[cn].outfits || [];
-                    for (var j = 0; j < co.length; j++) {
-                        if (co[j].id === outfit.id) { Object.assign(co[j], { name: name, category: cat, subCategory: subCat, description: desc, sceneTag: scene, imageData: editImgData }); found = true; break; }
-                    }
-                    if (found) break;
+            // 编辑已有穿搭 - 在当前 partition 中查找
+            for (var i = 0; i < curP.outfits.length; i++) {
+                if (curP.outfits[i].id === outfit.id) {
+                    Object.assign(curP.outfits[i], { name: name, category: cat, subCategory: subCat, description: desc, sceneTag: scene, imageData: editImgData }); break;
                 }
             }
         } else {
-            // 新增穿搭 - 放入当前视角
+            // 新增穿搭 - 放入当前 partition
             var newOutfit = { id: genId(), name: name, category: cat, subCategory: subCat, description: desc, sceneTag: scene, imageData: editImgData, createdAt: Date.now() };
-            if (dd.currentView === 'char' && dd.currentChar) {
-                getCharData(dd, dd.currentChar).outfits.push(newOutfit);
-            } else {
-                dd.outfits.push(newOutfit);
-            }
+            curP.outfits.push(newOutfit);
         }
-        save(dd); closeSheet(sheet); toast('✨ 已保存：' + name); fn.renderCatbar(); fn.renderGrid(); fn.renderBottomStatus(); fn.updateBtn();
+        saveCurrent(curP); closeSheet(sheet); toast('✨ 已保存：' + name); fn.renderCatbar(); fn.renderGrid(); fn.renderBottomStatus(); fn.updateBtn();
     });
 }
 
@@ -579,7 +599,7 @@ function openPresetsSheet() {
         var dd = load();
         if (!Array.isArray(dd.presets)) dd.presets = [];
         var newId = genId();
-        dd.presets.push({ id: newId, name: name, createdAt: Date.now(), outfits: JSON.parse(JSON.stringify(dd.outfits)), categories: JSON.parse(JSON.stringify(dd.categories)), activeIds: JSON.parse(JSON.stringify(dd.activeIds)) });
+        dd.presets.push({ id: newId, name: name, createdAt: Date.now(), outfits: JSON.parse(JSON.stringify(dd.outfits)), categories: JSON.parse(JSON.stringify(dd.categories)), activeIds: JSON.parse(JSON.stringify(dd.activeIds)), accessories: JSON.parse(JSON.stringify(dd.accessories || [])), accCategories: JSON.parse(JSON.stringify(dd.accCategories || [])) });
         save(dd); dd = load(); dd.activePresetId = newId; save(dd); inp.value = ''; closeSheet(sheet); toast('✨ 预设「' + name + '」已保存'); openPresetsSheet();
     });
     inp.addEventListener('keydown', function (e) { if (e.key === 'Enter') sheet.querySelector('#om-preset-save').click(); });
@@ -593,8 +613,10 @@ function openPresetsSheet() {
             dd.outfits = JSON.parse(JSON.stringify(p.outfits || []));
             dd.categories = JSON.parse(JSON.stringify(p.categories || []));
             dd.activeIds = JSON.parse(JSON.stringify(p.activeIds || []));
+            dd.accessories = JSON.parse(JSON.stringify(p.accessories || []));
+            dd.accCategories = JSON.parse(JSON.stringify(p.accCategories || []));
             dd.activePresetId = p.id;
-            save(dd); closeSheet(sheet); fn.renderCatbar(); fn.renderGrid(); fn.renderBottomStatus(); fn.updateBtn(); toast('✅ 已加载「' + p.name + '」');
+            save(dd); closeSheet(sheet); fn.renderCatbar(); fn.renderAccCatbar(); fn.renderGrid(); fn.renderBottomStatus(); fn.updateBtn(); toast('✅ 已加载「' + p.name + '」');
         });
     });
     sheet.querySelectorAll('.om-preset-ren').forEach(function (btn) {
@@ -717,29 +739,29 @@ function openSettingsSheet() {
         '<div class="om-setting-row om-row-inline"><label>注入时显示 Toast 提示</label><input type="checkbox" class="om-chk" id="om-debug"' + (d.debug ? ' checked' : '') + ' /></div>',
     ].join(''));
 
-    sheet.querySelector('#om-mode').addEventListener('change', function () { var dd = load(); dd.mode = this.value; save(dd); });
-    sheet.querySelector('#om-inject-pos').addEventListener('change', function () { var dd = load(); dd.injectPosition = this.value; save(dd); });
-    sheet.querySelector('#om-tpl-single').addEventListener('input', function () { var dd = load(); dd.singleTemplate = this.value; save(dd); });
-    sheet.querySelector('#om-tpl-multi').addEventListener('input', function () { var dd = load(); dd.multiTemplate = this.value; save(dd); });
-    sheet.querySelector('#om-tpl-char-single').addEventListener('input', function () { var dd = load(); dd.charSingleTemplate = this.value; save(dd); });
-    sheet.querySelector('#om-tpl-char-multi').addEventListener('input', function () { var dd = load(); dd.charMultiTemplate = this.value; save(dd); });
-    sheet.querySelector('#om-imgprompt').addEventListener('input', function () { var dd = load(); dd.imagePrompt = this.value; save(dd); });
-    sheet.querySelector('#om-multi-imgprompt').addEventListener('input', function () { var dd = load(); dd.multiImagePrompt = this.value; save(dd); });
+    sheet.querySelector('#om-mode').addEventListener('change', function () { var m = loadMeta(); m.mode = this.value; saveMeta(m); });
+    sheet.querySelector('#om-inject-pos').addEventListener('change', function () { var m = loadMeta(); m.injectPosition = this.value; saveMeta(m); });
+    sheet.querySelector('#om-tpl-single').addEventListener('input', function () { var m = loadMeta(); m.singleTemplate = this.value; saveMeta(m); });
+    sheet.querySelector('#om-tpl-multi').addEventListener('input', function () { var m = loadMeta(); m.multiTemplate = this.value; saveMeta(m); });
+    sheet.querySelector('#om-tpl-char-single').addEventListener('input', function () { var m = loadMeta(); m.charSingleTemplate = this.value; saveMeta(m); });
+    sheet.querySelector('#om-tpl-char-multi').addEventListener('input', function () { var m = loadMeta(); m.charMultiTemplate = this.value; saveMeta(m); });
+    sheet.querySelector('#om-imgprompt').addEventListener('input', function () { var m = loadMeta(); m.imagePrompt = this.value; saveMeta(m); });
+    sheet.querySelector('#om-multi-imgprompt').addEventListener('input', function () { var m = loadMeta(); m.multiImagePrompt = this.value; saveMeta(m); });
 
     // API Vision 配置
-    sheet.querySelector('#om-api-v-endpoint').addEventListener('input', function () { var dd = load(); dd.apiVision.endpoint = this.value.trim(); save(dd); });
-    sheet.querySelector('#om-api-v-key').addEventListener('input', function () { var dd = load(); dd.apiVision.key = this.value.trim(); save(dd); });
-    sheet.querySelector('#om-api-v-model').addEventListener('input', function () { var dd = load(); dd.apiVision.model = this.value.trim(); save(dd); });
-    sheet.querySelector('#om-api-v-prompt').addEventListener('input', function () { var dd = load(); dd.apiVision.prompt = this.value; save(dd); });
-    sheet.querySelector('#om-api-v-overwrite').addEventListener('change', function () { var dd = load(); dd.apiVision.overwrite = this.checked; save(dd); });
+    sheet.querySelector('#om-api-v-endpoint').addEventListener('input', function () { var m = loadMeta(); m.apiVision.endpoint = this.value.trim(); saveMeta(m); });
+    sheet.querySelector('#om-api-v-key').addEventListener('input', function () { var m = loadMeta(); m.apiVision.key = this.value.trim(); saveMeta(m); });
+    sheet.querySelector('#om-api-v-model').addEventListener('input', function () { var m = loadMeta(); m.apiVision.model = this.value.trim(); saveMeta(m); });
+    sheet.querySelector('#om-api-v-prompt').addEventListener('input', function () { var m = loadMeta(); m.apiVision.prompt = this.value; saveMeta(m); });
+    sheet.querySelector('#om-api-v-overwrite').addEventListener('change', function () { var m = loadMeta(); m.apiVision.overwrite = this.checked; saveMeta(m); });
     sheet.querySelector('#om-api-v-test').addEventListener('click', function () {
-        var dd = load();
-        if (!dd.apiVision.endpoint || !dd.apiVision.key || !dd.apiVision.model) { toast('请先填写 API 地址、Key 和模型名称', true); return; }
+        var m = loadMeta();
+        if (!m.apiVision.endpoint || !m.apiVision.key || !m.apiVision.model) { toast('请先填写 API 地址、Key 和模型名称', true); return; }
         toast('正在测试...');
-        fetch(normalizeEndpoint(dd.apiVision.endpoint, '/v1/chat/completions'), {
+        fetch(normalizeEndpoint(m.apiVision.endpoint, '/v1/chat/completions'), {
             method: 'POST',
-            headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + dd.apiVision.key },
-            body: JSON.stringify({ model: dd.apiVision.model, messages: [{ role: 'user', content: '回复OK' }], max_tokens: 10 })
+            headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + m.apiVision.key },
+            body: JSON.stringify({ model: m.apiVision.model, messages: [{ role: 'user', content: '回复OK' }], max_tokens: 10 })
         }).then(function (r) {
             if (!r.ok) return r.text().then(function (t) { throw new Error('HTTP ' + r.status); });
             return r.json();
@@ -749,18 +771,18 @@ function openSettingsSheet() {
     // Vision 模型拉取按钮
     var vModelFetch = sheet.querySelector('#om-api-v-model-fetch');
     if (vModelFetch) vModelFetch.addEventListener('click', function () {
-        var dd = load();
-        if (!dd.apiVision.endpoint || !dd.apiVision.key) { toast('请先填写 API 地址和 Key', true); return; }
-        openModelPicker(dd.apiVision, function (model) {
-            dd = load(); dd.apiVision.model = model; save(dd);
+        var m = loadMeta();
+        if (!m.apiVision.endpoint || !m.apiVision.key) { toast('请先填写 API 地址和 Key', true); return; }
+        openModelPicker(m.apiVision, function (model) {
+            var m2 = loadMeta(); m2.apiVision.model = model; saveMeta(m2);
             var inp = sheet.querySelector('#om-api-v-model'); if (inp) inp.value = model;
         });
     });
 
     sheet.querySelector('#om-show-ball').addEventListener('change', function () {
-        var dd = load(); dd.showBall = this.checked; save(dd);
+        var m = loadMeta(); m.showBall = this.checked; saveMeta(m);
         var oldFab = document.getElementById('om-fab-main'); if (oldFab) oldFab.parentNode.removeChild(oldFab);
-        if (dd.showBall) fn.injectFab();
+        if (m.showBall && fn.injectFab) fn.injectFab();
     });
 
     // 悬浮球自定义
@@ -778,7 +800,7 @@ function openSettingsSheet() {
     }
     function refreshFab() {
         var oldFab = document.getElementById('om-fab-main'); if (oldFab) oldFab.parentNode.removeChild(oldFab);
-        var dd = load(); if (dd.showBall !== false) fn.injectFab();
+        var m = loadMeta(); if (m.showBall !== false && fn.injectFab) fn.injectFab();
     }
     sheet.querySelector('#om-fab-pick').addEventListener('click', function () { fabFileInp.click(); });
     fabFileInp.addEventListener('change', function () {
@@ -787,7 +809,7 @@ function openSettingsSheet() {
         reader.onload = function (e) {
             var dataUrl = e.target.result;
             // 不压缩：保留透明底 PNG 和 GIF 动画
-            var dd = load(); dd.fabImage = dataUrl; save(dd);
+            var m = loadMeta(); m.fabImage = dataUrl; saveMeta(m);
             updateFabPreview(dataUrl);
             refreshFab();
             toast('✨ 悬浮球已更新');
@@ -795,30 +817,30 @@ function openSettingsSheet() {
         reader.readAsDataURL(file);
     });
     fabResetBtn.addEventListener('click', function () {
-        var dd = load(); dd.fabImage = ''; save(dd);
+        var m = loadMeta(); m.fabImage = ''; saveMeta(m);
         updateFabPreview('');
         refreshFab();
         toast('悬浮球已恢复默认');
     });
     sheet.querySelector('#om-fab-size').addEventListener('input', function () {
         sheet.querySelector('#om-fab-size-val').textContent = this.value + 'px';
-        var dd = load(); dd.fabSize = parseInt(this.value); save(dd);
+        var m = loadMeta(); m.fabSize = parseInt(this.value); saveMeta(m);
         refreshFab();
     });
-    sheet.querySelector('#om-debug').addEventListener('change', function () { var dd = load(); dd.debug = this.checked; save(dd); });
+    sheet.querySelector('#om-debug').addEventListener('change', function () { var m = loadMeta(); m.debug = this.checked; saveMeta(m); });
     sheet.querySelector('#om-exp').addEventListener('click', function () { fn.exportData(); });
     sheet.querySelector('#om-imp').addEventListener('click', function () { fn.importData(); });
     sheet.querySelector('#om-clear').addEventListener('click', function () {
-        var dd = load();
-        var label = dd.currentView === 'char' && dd.currentChar ? '「' + (dd.currentChar === SHARED_CHAR_KEY ? SHARED_CHAR_LABEL : dd.currentChar) + '」的穿搭' : 'User 的穿搭';
+        var meta = loadMeta();
+        var label = meta.currentView === 'char' && meta.currentChar
+            ? '「' + (meta.currentChar === SHARED_CHAR_KEY ? SHARED_CHAR_LABEL : charNameById(meta.currentChar)) + '」的穿搭'
+            : 'User 的穿搭';
         if (!confirm('确定清空' + label + '？（其他数据不受影响）')) return;
-        if (dd.currentView === 'char' && dd.currentChar) {
-            var cd = getCharData(dd, dd.currentChar);
-            cd.outfits = []; cd.categories = []; cd.activeIds = [];
-        } else {
-            dd.outfits = []; dd.categories = []; dd.activeIds = [];
-        }
-        save(dd); closeSheet(sheet); fn.renderCatbar(); fn.renderGrid(); fn.renderBottomStatus(); fn.updateBtn(); toast('已清空');
+        var curP = loadCurrent();
+        curP.outfits = []; curP.categories = []; curP.activeIds = [];
+        saveCurrent(curP);
+        syncActivePartitions(currentPartKey(), []);
+        closeSheet(sheet); fn.renderCatbar(); fn.renderGrid(); fn.renderBottomStatus(); fn.updateBtn(); toast('已清空');
     });
     sheet.querySelector('#om-open-cats').addEventListener('click', function () {
         closeSheet(sheet); openCatsSheet();
@@ -1073,13 +1095,228 @@ function openLightbox(outfits, startId) {
     lb.style.setProperty('pointer-events', 'auto', 'important');
 }
 
+// ── 配饰操作菜单 ─────────────────────────────────────────
+function openAccContextMenu(acc) {
+    if (!acc) return;
+    var sheet = createSheet([
+        '<div class="om-ctx-outfit-name"><i class="fa-solid fa-gem" style="margin-right:6px;opacity:.5;"></i>' + esc(acc.name) + '</div>',
+        '<div class="om-ctx-item" id="om-accctx-edit"><i class="fa-solid fa-pen"></i>编辑</div>',
+        acc.imageData ? '<div class="om-ctx-item" id="om-accctx-view"><i class="fa-solid fa-expand"></i>查看大图</div>' : '',
+        '<div class="om-ctx-item danger" id="om-accctx-del"><i class="fa-solid fa-trash"></i>删除</div>',
+    ].join(''));
+
+    var editEl = sheet.querySelector('#om-accctx-edit');
+    if (editEl) editEl.addEventListener('click', function () {
+        closeSheet(sheet);
+        openAccEditSheet(acc, acc.category || '');
+    });
+
+    var viewEl = sheet.querySelector('#om-accctx-view');
+    if (viewEl) viewEl.addEventListener('click', function () {
+        closeSheet(sheet);
+        openLightbox([acc], acc.id);
+    });
+
+    var delEl = sheet.querySelector('#om-accctx-del');
+    if (delEl) delEl.addEventListener('click', function () {
+        closeSheet(sheet);
+        if (!confirm('确定删除配饰「' + acc.name + '」？\n引用此配饰的套装方案将自动移除该配饰。')) return;
+        var curP = loadCurrent();
+        curP.accessories = (curP.accessories || []).filter(function (a) { return a.id !== acc.id; });
+        cleanAccIdFromKits(curP, acc.id);
+        saveCurrent(curP);
+        fn.renderGrid(); toast('已删除');
+    });
+}
+
+// ── 配饰编辑弹窗 ─────────────────────────────────────────
+function openAccEditSheet(acc, defaultCat) {
+    var editImgData = acc ? (acc.imageData || null) : null;
+    var curPart = loadCurrent();
+    var accCats = curPart.accCategories || [];
+    var catNames = getCatNames(accCats);
+    var catOpts = '<option value="">无分类</option>' +
+        catNames.map(function (c) { return '<option value="' + esc(c) + '"' + (acc && acc.category === c ? ' selected' : '') + '>' + esc(c) + '</option>'; }).join('');
+
+    var curParent = acc ? (acc.category || '') : (defaultCat || '');
+    var curSub = acc ? (acc.subCategory || '') : '';
+    var subCats = curParent ? getSubCats(accCats, curParent) : [];
+    var subDisplay = curParent ? '' : 'display:none;';
+    var subOpts = '<option value="">无子分类</option>' +
+        subCats.map(function (sc) { return '<option value="' + esc(sc) + '"' + (sc === curSub ? ' selected' : '') + '>' + esc(sc) + '</option>'; }).join('');
+
+    var sheet = createSheet([
+        '<div class="om-sheet-title"><i class="fa-solid fa-' + (acc ? 'pen' : 'plus') + '"></i>' + (acc ? '编辑配饰' : '添加配饰') + '</div>',
+        '<div class="om-field"><label>配饰名称 *</label><input type="text" id="om-acc-dn" placeholder="如：黑色贝雷帽" value="' + esc(acc ? acc.name : '') + '" /></div>',
+        '<div class="om-field"><label>分类 <span class="om-hint">分类名将作为注入标签</span></label><div class="om-frow"><select id="om-acc-dcat">' + catOpts + '</select><button class="om-btn om-btn-outline" id="om-acc-dnewcat" style="white-space:nowrap;font-size:.8em;padding:7px 10px">+ 新建</button></div></div>',
+        '<div class="om-field" id="om-acc-subcat-field" style="' + subDisplay + '"><label>子分类</label><div class="om-frow"><select id="om-acc-dsubcat">' + subOpts + '</select><button class="om-btn om-btn-outline" id="om-acc-dnewsubcat" style="white-space:nowrap;font-size:.8em;padding:7px 10px">+ 新建</button></div></div>',
+        '<div class="om-field"><label>文字描述 <span class="om-hint">AI 注入用，越详细越好</span></label><textarea id="om-acc-ddesc" rows="4" placeholder="如：黑色羊毛贝雷帽，帽檐微微偏右，帽身有一枚复古金属别针……">' + esc(acc ? acc.description || '' : '') + '</textarea></div>',
+        '<div class="om-field"><label>参考图片 <span class="om-hint">可选，自动压缩</span></label>',
+        '<div class="om-imgarea" id="om-acc-dimgarea">' + (editImgData ? '<img src="' + editImgData + '" />' : '<div class="om-imgph"><i class="fa-regular fa-image"></i><span>点击或拖拽上传</span></div>') + '</div>',
+        '<input type="file" id="om-acc-dfile" accept="image/*" style="display:none" />',
+        '<div class="om-img-actions"><button class="om-btn om-btn-outline" id="om-acc-dpick" style="font-size:.8em"><i class="fa-solid fa-image"></i> 选择图片</button>' +
+        (!acc ? '<button class="om-btn om-btn-outline" id="om-acc-dbatch" style="font-size:.8em"><i class="fa-solid fa-images"></i> 批量导入</button>' : '') +
+        (editImgData ? '<button class="om-btn om-btn-danger" id="om-acc-dclr" style="font-size:.8em">删除图片</button>' : '') + '</div></div>',
+        '<input type="file" id="om-acc-dbatchfile" accept="image/*" multiple style="display:none" />',
+        '<div class="om-edit-foot"><button class="om-btn om-btn-outline" id="om-acc-dcancel">取消</button><button class="om-btn om-btn-safe" id="om-acc-dsave">保存</button></div>',
+    ].join(''));
+
+    // 默认分类
+    if (defaultCat) {
+        var sel = sheet.querySelector('#om-acc-dcat'); if (sel) sel.value = defaultCat;
+    }
+
+    // 父分类联动子分类
+    sheet.querySelector('#om-acc-dcat').addEventListener('change', function () {
+        var parentVal = this.value;
+        var subField = sheet.querySelector('#om-acc-subcat-field');
+        var subSel = sheet.querySelector('#om-acc-dsubcat');
+        if (!parentVal) {
+            subField.style.display = 'none';
+            subSel.innerHTML = '<option value="">无子分类</option>';
+            return;
+        }
+        // 有父分类就始终显示子分类区域（方便新建）
+        subField.style.display = '';
+        var cp = loadCurrent();
+        var subs = getSubCats(cp.accCategories || [], parentVal);
+        subSel.innerHTML = '<option value="">无子分类</option>' +
+            subs.map(function (sc) { return '<option value="' + esc(sc) + '">' + esc(sc) + '</option>'; }).join('');
+    });
+
+    // 图片处理
+    var fileInp = sheet.querySelector('#om-acc-dfile');
+    var imgArea = sheet.querySelector('#om-acc-dimgarea');
+    function setImg(data) {
+        editImgData = data;
+        imgArea.innerHTML = data ? '<img src="' + data + '" />' : '<div class="om-imgph"><i class="fa-regular fa-image"></i><span>点击或拖拽上传</span></div>';
+        var clrOld = sheet.querySelector('#om-acc-dclr'); var acts = sheet.querySelector('.om-img-actions');
+        if (data && !clrOld && acts) {
+            var b2 = document.createElement('button'); b2.className = 'om-btn om-btn-danger'; b2.id = 'om-acc-dclr'; b2.style.fontSize = '.8em'; b2.textContent = '删除图片';
+            b2.addEventListener('click', function () { setImg(null); }); acts.appendChild(b2);
+        } else if (!data && clrOld) clrOld.parentNode.removeChild(clrOld);
+    }
+    function handleFile(f) {
+        if (!f || f.type.indexOf('image') !== 0) return;
+        var r = new FileReader(); r.onload = function (e) { compressImage(e.target.result, function (c) { setImg(c); }); }; r.readAsDataURL(f);
+    }
+    sheet.querySelector('#om-acc-dpick').addEventListener('click', function () { fileInp.click(); });
+    imgArea.addEventListener('click', function () { fileInp.click(); });
+    fileInp.addEventListener('change', function () { if (fileInp.files[0]) handleFile(fileInp.files[0]); });
+    imgArea.addEventListener('dragover', function (e) { e.preventDefault(); imgArea.classList.add('drag'); });
+    imgArea.addEventListener('dragleave', function () { imgArea.classList.remove('drag'); });
+    imgArea.addEventListener('drop', function (e) { e.preventDefault(); imgArea.classList.remove('drag'); if (e.dataTransfer && e.dataTransfer.files[0]) handleFile(e.dataTransfer.files[0]); });
+    var clr = sheet.querySelector('#om-acc-dclr'); if (clr) clr.addEventListener('click', function () { setImg(null); });
+
+    // 批量导入按钮
+    var accBatchBtn = sheet.querySelector('#om-acc-dbatch');
+    var accBatchFileInp = sheet.querySelector('#om-acc-dbatchfile');
+    if (accBatchBtn && accBatchFileInp) {
+        accBatchBtn.addEventListener('click', function () { accBatchFileInp.click(); });
+        accBatchFileInp.addEventListener('change', function () {
+            var files = Array.from(accBatchFileInp.files || []).filter(function (f) { return f.type.indexOf('image') === 0; });
+            if (files.length === 0) { toast('未选择图片', true); return; }
+            closeSheet(sheet);
+            // 批量创建配饰：每张图一个配饰
+            var cat = sheet.querySelector('#om-acc-dcat').value || '';
+            var subCat = sheet.querySelector('#om-acc-dsubcat') ? sheet.querySelector('#om-acc-dsubcat').value || '' : '';
+            var pending = files.length;
+            var curP = loadCurrent();
+            if (!Array.isArray(curP.accessories)) curP.accessories = [];
+            files.forEach(function (file, idx) {
+                var reader = new FileReader();
+                reader.onload = function (e) {
+                    compressImage(e.target.result, function (compressed) {
+                        curP.accessories.push({
+                            id: 'a_' + genId().substring(0, 8),
+                            name: '配饰' + (curP.accessories.length + 1),
+                            category: cat,
+                            subCategory: subCat,
+                            description: '',
+                            imageData: compressed,
+                            createdAt: Date.now()
+                        });
+                        pending--;
+                        if (pending === 0) {
+                            saveCurrent(curP);
+                            fn.renderAccCatbar(); fn.renderGrid();
+                            toast('✅ 已导入 ' + files.length + ' 个配饰');
+                        }
+                    });
+                };
+                reader.readAsDataURL(file);
+            });
+            accBatchFileInp.value = '';
+        });
+    }
+
+    // 新建分类
+    sheet.querySelector('#om-acc-dnewcat').addEventListener('click', function () {
+        var name = prompt('新配饰分类名称：'); if (!name || !name.trim()) return; name = name.trim();
+        var cp = loadCurrent();
+        if (!Array.isArray(cp.accCategories)) cp.accCategories = [];
+        var names = getCatNames(cp.accCategories);
+        if (names.indexOf(name) === -1) { cp.accCategories.push({ name: name, children: [] }); saveCurrent(cp); fn.renderAccCatbar(); }
+        var sel = sheet.querySelector('#om-acc-dcat');
+        var ex = false; for (var i = 0; i < sel.options.length; i++) { if (sel.options[i].value === name) { ex = true; break; } }
+        if (!ex) { var opt = document.createElement('option'); opt.value = name; opt.textContent = name; sel.appendChild(opt); }
+        sel.value = name;
+        sel.dispatchEvent(new Event('change'));
+        toast('分类「' + name + '」已添加');
+    });
+
+    // 新建子分类
+    sheet.querySelector('#om-acc-dnewsubcat').addEventListener('click', function () {
+        var parentVal = sheet.querySelector('#om-acc-dcat').value;
+        if (!parentVal) { toast('请先选择父分类', true); return; }
+        var scName = prompt('新子分类名称（属于「' + parentVal + '」）：'); if (!scName || !scName.trim()) return; scName = scName.trim();
+        var cp = loadCurrent();
+        var catObj = findCatObj(cp.accCategories || [], parentVal);
+        if (catObj) {
+            if (!catObj.children) catObj.children = [];
+            if (catObj.children.indexOf(scName) === -1) { catObj.children.push(scName); saveCurrent(cp); fn.renderAccCatbar(); }
+        }
+        var subSel = sheet.querySelector('#om-acc-dsubcat');
+        var ex2 = false; for (var j = 0; j < subSel.options.length; j++) { if (subSel.options[j].value === scName) { ex2 = true; break; } }
+        if (!ex2) { var opt2 = document.createElement('option'); opt2.value = scName; opt2.textContent = scName; subSel.appendChild(opt2); }
+        subSel.value = scName;
+        sheet.querySelector('#om-acc-subcat-field').style.display = '';
+        toast('子分类「' + scName + '」已添加');
+    });
+
+    sheet.querySelector('#om-acc-dcancel').addEventListener('click', function () { closeSheet(sheet); });
+    sheet.querySelector('#om-acc-dsave').addEventListener('click', function () {
+        var name = sheet.querySelector('#om-acc-dn').value.trim();
+        if (!name) { toast('请输入配饰名称', true); return; }
+        var cat = sheet.querySelector('#om-acc-dcat').value;
+        var subCat = sheet.querySelector('#om-acc-dsubcat').value;
+        var desc = sheet.querySelector('#om-acc-ddesc').value.trim();
+        var curP = loadCurrent();
+        if (!Array.isArray(curP.accessories)) curP.accessories = [];
+        if (acc) {
+            for (var i = 0; i < curP.accessories.length; i++) {
+                if (curP.accessories[i].id === acc.id) {
+                    Object.assign(curP.accessories[i], { name: name, category: cat, subCategory: subCat, description: desc, imageData: editImgData });
+                    break;
+                }
+            }
+        } else {
+            curP.accessories.push({ id: 'a_' + genId().substring(0, 8), name: name, category: cat, subCategory: subCat, description: desc, imageData: editImgData, createdAt: Date.now() });
+        }
+        saveCurrent(curP); closeSheet(sheet); toast('✨ 已保存：' + name); fn.renderAccCatbar(); fn.renderGrid();
+    });
+}
+
 // ── 注册到共享桥 ─────────────────────────────────────────
 export { openContextMenu, openEditSheet, openPresetsSheet, openSettingsSheet, openCatsSheet };
+export { openAccContextMenu, openAccEditSheet };
 export { createSheet, closeSheet, openLightbox, getAllTagSuggestions };
 
 export function registerSheetsFn() {
     fn.openContextMenu = openContextMenu;
     fn.openEditSheet = openEditSheet;
+    fn.openAccContextMenu = openAccContextMenu;
+    fn.openAccEditSheet = openAccEditSheet;
     fn.openPresetsSheet = openPresetsSheet;
     fn.openSettingsSheet = openSettingsSheet;
     fn.openCatsSheet = openCatsSheet;
