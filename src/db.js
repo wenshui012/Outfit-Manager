@@ -764,7 +764,9 @@ function migrateFromV1(oldData, cb) {
     var userDefault = {
         outfits: oldData.outfits || [],
         categories: migrateCategories(oldData.categories || []),
-        activeIds: Array.isArray(oldData.activeIds) ? oldData.activeIds : (oldData.activeId ? [oldData.activeId] : [])
+        activeIds: Array.isArray(oldData.activeIds) ? oldData.activeIds : (oldData.activeId ? [oldData.activeId] : []),
+        accessories: oldData.accessories || [],
+        accCategories: migrateCategories(oldData.accCategories || [])
     };
     entries.push({ key: 'user:__default__', value: userDefault });
     partCache['user:__default__'] = userDefault;
@@ -781,7 +783,9 @@ function migrateFromV1(oldData, cb) {
             var pPart = {
                 outfits: p.outfits || [],
                 categories: migrateCategories(p.categories || []),
-                activeIds: p.activeIds || []
+                activeIds: p.activeIds || [],
+                accessories: p.accessories || [],
+                accCategories: migrateCategories(p.accCategories || [])
             };
             entries.push({ key: partKey, value: pPart });
             partCache[partKey] = pPart;
@@ -800,7 +804,9 @@ function migrateFromV1(oldData, cb) {
                 var activePPart = {
                     outfits: userDefault.outfits,
                     categories: userDefault.categories,
-                    activeIds: userDefault.activeIds
+                    activeIds: userDefault.activeIds,
+                    accessories: userDefault.accessories,
+                    accCategories: userDefault.accCategories
                 };
                 // 更新 entries 和 partCache 里对应的 partition
                 for (var ei = 0; ei < entries.length; ei++) {
@@ -831,7 +837,9 @@ function migrateFromV1(oldData, cb) {
         var sharedPart = {
             outfits: scd.outfits || [],
             categories: migrateCategories(scd.categories || []),
-            activeIds: scd.activeIds || []
+            activeIds: scd.activeIds || [],
+            accessories: scd.accessories || [],
+            accCategories: migrateCategories(scd.accCategories || [])
         };
         meta.charIndex.push({ id: SHARED_CHAR_KEY, name: SHARED_CHAR_KEY, partKey: 'char:__shared__' });
         entries.push({ key: 'char:__shared__', value: sharedPart });
@@ -864,7 +872,9 @@ function migrateFromV1(oldData, cb) {
         var charPart = {
             outfits: cd.outfits || [],
             categories: migrateCategories(cd.categories || []),
-            activeIds: cd.activeIds || []
+            activeIds: cd.activeIds || [],
+            accessories: cd.accessories || [],
+            accCategories: migrateCategories(cd.accCategories || [])
         };
         meta.charIndex.push({ id: cid, name: name, partKey: partKey });
         entries.push({ key: partKey, value: charPart });
@@ -943,7 +953,9 @@ function splitServerDataToPartitions(serverData, cb) {
     var userDefault = {
         outfits: serverData.outfits || [],
         categories: migrateCategories(serverData.categories || []),
-        activeIds: Array.isArray(serverData.activeIds) ? serverData.activeIds : []
+        activeIds: Array.isArray(serverData.activeIds) ? serverData.activeIds : [],
+        accessories: serverData.accessories || [],
+        accCategories: migrateCategories(serverData.accCategories || [])
     };
     entries.push({ key: 'user:__default__', value: userDefault });
     partCache['user:__default__'] = userDefault;
@@ -960,7 +972,9 @@ function splitServerDataToPartitions(serverData, cb) {
             var pPart = {
                 outfits: p.outfits || [],
                 categories: migrateCategories(p.categories || []),
-                activeIds: p.activeIds || []
+                activeIds: p.activeIds || [],
+                accessories: p.accessories || [],
+                accCategories: migrateCategories(p.accCategories || [])
             };
             entries.push({ key: partKey, value: pPart });
             partCache[partKey] = pPart;
@@ -976,7 +990,9 @@ function splitServerDataToPartitions(serverData, cb) {
                 var activePPart = {
                     outfits: userDefault.outfits,
                     categories: userDefault.categories,
-                    activeIds: userDefault.activeIds
+                    activeIds: userDefault.activeIds,
+                    accessories: userDefault.accessories,
+                    accCategories: userDefault.accCategories
                 };
                 for (var ei = 0; ei < entries.length; ei++) {
                     if (entries[ei].key === activeUserPK) {
@@ -1011,7 +1027,9 @@ function splitServerDataToPartitions(serverData, cb) {
         var sharedPart = {
             outfits: scd.outfits || [],
             categories: migrateCategories(scd.categories || []),
-            activeIds: scd.activeIds || []
+            activeIds: scd.activeIds || [],
+            accessories: scd.accessories || [],
+            accCategories: migrateCategories(scd.accCategories || [])
         };
         meta.charIndex.push({ id: SHARED_CHAR_KEY, name: SHARED_CHAR_KEY, partKey: 'char:__shared__' });
         entries.push({ key: 'char:__shared__', value: sharedPart });
@@ -1027,7 +1045,9 @@ function splitServerDataToPartitions(serverData, cb) {
         var charPart = {
             outfits: cd.outfits || [],
             categories: migrateCategories(cd.categories || []),
-            activeIds: cd.activeIds || []
+            activeIds: cd.activeIds || [],
+            accessories: cd.accessories || [],
+            accCategories: migrateCategories(cd.accCategories || [])
         };
         meta.charIndex.push({ id: cid, name: name, partKey: partKey });
         entries.push({ key: partKey, value: charPart });
@@ -1466,7 +1486,9 @@ export function save(d) {
                     var newPart = {
                         outfits: d.chars[name].outfits || [],
                         categories: d.chars[name].categories || [],
-                        activeIds: d.chars[name].activeIds || []
+                        activeIds: d.chars[name].activeIds || [],
+                        accessories: d.chars[name].accessories || [],
+                        accCategories: d.chars[name].accCategories || []
                     };
                     savePartition(newPartKey, newPart);
                     if (newPart.activeIds.length > 0) {
@@ -1588,7 +1610,9 @@ export function save(d) {
                 var pp = {
                     outfits: dp.outfits || [],
                     categories: dp.categories || [],
-                    activeIds: dp.activeIds || []
+                    activeIds: dp.activeIds || [],
+                    accessories: dp.accessories || [],
+                    accCategories: dp.accCategories || []
                 };
                 savePartition(existing.partKey, pp);
                 delete oldPresetMap[dp.id];
@@ -1600,7 +1624,9 @@ export function save(d) {
                 var newPP = {
                     outfits: dp.outfits || [],
                     categories: dp.categories || [],
-                    activeIds: dp.activeIds || []
+                    activeIds: dp.activeIds || [],
+                    accessories: dp.accessories || [],
+                    accCategories: dp.accCategories || []
                 };
                 savePartition(partKey, newPP);
             }

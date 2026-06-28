@@ -16,6 +16,99 @@ export function initBatchDeps(cs, cls, gats) {
     getAllTagSuggestions = gats;
 }
 
+function cloneJson(v, fallback) {
+    if (v === undefined || v === null) return fallback;
+    return JSON.parse(JSON.stringify(v));
+}
+
+function ensurePartArrays(part) {
+    if (!part) return;
+    if (!Array.isArray(part.outfits)) part.outfits = [];
+    if (!Array.isArray(part.categories)) part.categories = [];
+    if (!Array.isArray(part.activeIds)) part.activeIds = [];
+    if (!Array.isArray(part.accessories)) part.accessories = [];
+    if (!Array.isArray(part.accCategories)) part.accCategories = [];
+}
+
+function mergeCategoryList(target, incoming) {
+    if (!Array.isArray(target)) target = [];
+    (incoming || []).forEach(function (c) {
+        var name = typeof c === 'object' ? c.name : c;
+        var exists = getCatNames(target).indexOf(name) !== -1;
+        if (!exists) target.push(cloneJson(c, c));
+    });
+    return target;
+}
+
+function cloneAccessoryList(accessories, existing) {
+    var used = {};
+    (existing || []).forEach(function (a) { if (a && a.id) used[a.id] = true; });
+    var map = {};
+    var list = [];
+    (accessories || []).forEach(function (a) {
+        if (!a) return;
+        var oldId = a.id || ('a_' + genId().substring(0, 8));
+        var newId = oldId;
+        while (used[newId]) newId = 'a_' + genId().substring(0, 8);
+        used[newId] = true;
+        map[oldId] = newId;
+        var copy = cloneJson(a, {});
+        copy.id = newId;
+        list.push(copy);
+    });
+    return { list: list, map: map };
+}
+
+function remapKitAccIds(outfit, accIdMap) {
+    if (!outfit || !Array.isArray(outfit.kits)) return outfit;
+    outfit.kits.forEach(function (kit) {
+        if (!kit || !Array.isArray(kit.accIds)) return;
+        kit.accIds = kit.accIds.map(function (aid) { return accIdMap[aid] || aid; });
+    });
+    return outfit;
+}
+
+function cloneOutfitForImport(outfit, accIdMap) {
+    var copy = cloneJson(outfit, {});
+    copy.id = genId();
+    return remapKitAccIds(copy, accIdMap || {});
+}
+
+function clearOutfitKits(outfit) {
+    if (!outfit) return outfit;
+    outfit.kits = [];
+    outfit.activeKitId = null;
+    return outfit;
+}
+
+function mergeAccessoriesByName(existing, incoming) {
+    if (!Array.isArray(existing)) existing = [];
+    var map = {};
+    (incoming || []).forEach(function (imp) {
+        if (!imp) return;
+        var oldId = imp.id || '';
+        var found = null;
+        for (var i = 0; i < existing.length; i++) {
+            if (existing[i].name && imp.name && existing[i].name === imp.name) {
+                found = existing[i];
+                break;
+            }
+        }
+        if (found) {
+            var keepId = found.id;
+            Object.assign(found, cloneJson(imp, {}), { id: keepId });
+            if (oldId) map[oldId] = keepId;
+        } else {
+            var cloned = cloneAccessoryList([imp], existing);
+            if (cloned.list[0]) {
+                existing.push(cloned.list[0]);
+                if (oldId) map[oldId] = cloned.list[0].id;
+            }
+        }
+    });
+    return map;
+}
+
 // ── 批量标签选择面板 ──────────────────────────────────────
 function openBatchTagPanel(selectedIds, onDone) {
     var d = load();
@@ -110,20 +203,25 @@ function doExportFile(data, filename) {
 function collectImageUrls(data) {
     var urls = [];
     var prefix = getImageUrlPrefix();
-    function scanOutfits(outfits) {
-        if (!Array.isArray(outfits)) return;
-        outfits.forEach(function (o) {
-            if (o && typeof o.imageData === 'string' && o.imageData.indexOf(prefix) === 0) {
-                urls.push(o.imageData);
+    function scanImageItems(items) {
+        if (!Array.isArray(items)) return;
+        items.forEach(function (item) {
+            if (item && typeof item.imageData === 'string' && item.imageData.indexOf(prefix) === 0) {
+                urls.push(item.imageData);
             }
         });
     }
-    scanOutfits(data.outfits);
+    function scanPartition(part) {
+        if (!part) return;
+        scanImageItems(part.outfits);
+        scanImageItems(part.accessories);
+    }
+    scanPartition(data);
     if (data.chars) {
-        for (var cn in data.chars) { scanOutfits((data.chars[cn] || {}).outfits); }
+        for (var cn in data.chars) { scanPartition(data.chars[cn]); }
     }
     if (Array.isArray(data.presets)) {
-        data.presets.forEach(function (p) { if (p) scanOutfits(p.outfits); });
+        data.presets.forEach(function (p) { scanPartition(p); });
     }
     if (typeof data.fabImage === 'string' && data.fabImage.indexOf(prefix) === 0) {
         urls.push(data.fabImage);
@@ -197,7 +295,7 @@ function exportData() {
 
     document.getElementById('om-exp-user').addEventListener('click', function () {
         _mp.removeChild(modal);
-        doExport({ type: 'user', outfits: d.outfits, categories: d.categories }, 'outfit-mgr-user-' + new Date().toISOString().slice(0, 10) + '.json');
+        doExport({ type: 'user', outfits: d.outfits, categories: d.categories, accessories: d.accessories || [], accCategories: d.accCategories || [] }, 'outfit-mgr-user-' + new Date().toISOString().slice(0, 10) + '.json');
         toast('✅ 已导出 User 穿搭');
     });
 
@@ -205,7 +303,7 @@ function exportData() {
     if (expCharOne) expCharOne.addEventListener('click', function () {
         _mp.removeChild(modal);
         var cd = getCharData(d, d.currentChar);
-        doExport({ type: 'char', charName: d.currentChar, outfits: cd.outfits, categories: cd.categories }, 'outfit-mgr-char-' + d.currentChar + '-' + new Date().toISOString().slice(0, 10) + '.json');
+        doExport({ type: 'char', charName: d.currentChar, outfits: cd.outfits, categories: cd.categories, accessories: cd.accessories || [], accCategories: cd.accCategories || [] }, 'outfit-mgr-char-' + d.currentChar + '-' + new Date().toISOString().slice(0, 10) + '.json');
         toast('✅ 已导出「' + d.currentChar + '」');
     });
 
@@ -270,24 +368,29 @@ function resolveImportAssets(imported, cb) {
     if (!assets || typeof assets !== 'object') { cb(); return; }
     var prefix = getImageUrlPrefix();
 
-    function replaceInOutfits(outfits, urlMap) {
-        if (!Array.isArray(outfits)) return;
-        outfits.forEach(function (o) {
-            if (!o || typeof o.imageData !== 'string') return;
-            if (o.imageData.indexOf(prefix) === 0) {
-                var name = o.imageData.replace(prefix, '');
-                if (urlMap[name]) o.imageData = urlMap[name];
+    function replaceInImageItems(items, urlMap) {
+        if (!Array.isArray(items)) return;
+        items.forEach(function (item) {
+            if (!item || typeof item.imageData !== 'string') return;
+            if (item.imageData.indexOf(prefix) === 0) {
+                var name = item.imageData.replace(prefix, '');
+                if (urlMap[name]) item.imageData = urlMap[name];
             }
         });
     }
+    function replaceInPartition(part, urlMap) {
+        if (!part) return;
+        replaceInImageItems(part.outfits, urlMap);
+        replaceInImageItems(part.accessories, urlMap);
+    }
 
     function replaceAll(data, urlMap) {
-        replaceInOutfits(data.outfits, urlMap);
+        replaceInPartition(data, urlMap);
         if (data.chars) {
-            for (var cn in data.chars) { replaceInOutfits((data.chars[cn] || {}).outfits, urlMap); }
+            for (var cn in data.chars) { replaceInPartition(data.chars[cn], urlMap); }
         }
         if (Array.isArray(data.presets)) {
-            data.presets.forEach(function (p) { if (p) replaceInOutfits(p.outfits, urlMap); });
+            data.presets.forEach(function (p) { replaceInPartition(p, urlMap); });
         }
         if (typeof data.fabImage === 'string' && data.fabImage.indexOf(prefix) === 0) {
             var fabName = data.fabImage.replace(prefix, '');
@@ -356,21 +459,32 @@ function processImport(imported, mode) {
             var cn = imported.charName;
             if (!dd.chars) dd.chars = {};
             if (!dd.charNames) dd.charNames = [];
-            var srcO = (imported.outfits || []).map(function (o) { return Object.assign({}, o, { id: genId() }); });
             var srcC = imported.categories || [];
+            var srcAC = imported.accCategories || [];
             if (mode === 'replace') {
-                dd.chars[cn] = { outfits: srcO, categories: srcC, activeIds: [] };
+                var accClone = cloneAccessoryList(imported.accessories || [], []);
+                var srcO = (imported.outfits || []).map(function (o) { return cloneOutfitForImport(o, accClone.map); });
+                dd.chars[cn] = { outfits: srcO, categories: cloneJson(srcC, []), activeIds: [], accessories: accClone.list, accCategories: cloneJson(srcAC, []) };
             } else if (mode === 'update') {
                 var cd0 = getCharData(dd, cn);
-                var r0 = mergeByName(cd0.outfits, imported.outfits || []);
-                srcC.forEach(function (c) { if (cd0.categories.indexOf(c) === -1) cd0.categories.push(c); });
+                ensurePartArrays(cd0);
+                var accMap0 = mergeAccessoriesByName(cd0.accessories, imported.accessories || []);
+                var mappedOutfits0 = (imported.outfits || []).map(function (o) { return remapKitAccIds(cloneJson(o, {}), accMap0); });
+                var r0 = mergeByName(cd0.outfits, mappedOutfits0);
+                cd0.categories = mergeCategoryList(cd0.categories, srcC);
+                cd0.accCategories = mergeCategoryList(cd0.accCategories, srcAC);
                 if (dd.charNames.indexOf(cn) === -1) dd.charNames.push(cn);
                 save(dd); fn.renderViewbar(); fn.renderCatbar(); fn.renderGrid(); fn.renderBottomStatus();
                 toast('✅ 替换同名完成：更新' + r0.updated + '套，新增' + r0.added + '套'); return;
             } else {
                 var cd = getCharData(dd, cn);
+                ensurePartArrays(cd);
+                var accAppend = cloneAccessoryList(imported.accessories || [], cd.accessories);
+                accAppend.list.forEach(function (a) { cd.accessories.push(a); });
+                cd.accCategories = mergeCategoryList(cd.accCategories, srcAC);
+                var srcO = (imported.outfits || []).map(function (o) { return cloneOutfitForImport(o, accAppend.map); });
                 srcO.forEach(function (o) { cd.outfits.push(o); });
-                srcC.forEach(function (c) { if (cd.categories.indexOf(c) === -1) cd.categories.push(c); });
+                cd.categories = mergeCategoryList(cd.categories, srcC);
             }
             if (dd.charNames.indexOf(cn) === -1) dd.charNames.push(cn);
             save(dd); fn.renderViewbar(); fn.renderCatbar(); fn.renderGrid(); fn.renderBottomStatus();
@@ -385,20 +499,31 @@ function processImport(imported, mode) {
             var totalOutfits = 0;
             importedNames.forEach(function (cn) {
                 var src = imported.chars[cn]; if (!src) return;
-                var srcO2 = (src.outfits || []).map(function (o) { return Object.assign({}, o, { id: genId() }); });
                 var srcC2 = src.categories || [];
+                var srcAC2 = src.accCategories || [];
                 if (mode === 'replace') {
-                    dd.chars[cn] = { outfits: srcO2, categories: srcC2, activeIds: [] };
+                    var accClone2 = cloneAccessoryList(src.accessories || [], []);
+                    var srcO2 = (src.outfits || []).map(function (o) { return cloneOutfitForImport(o, accClone2.map); });
+                    dd.chars[cn] = { outfits: srcO2, categories: cloneJson(srcC2, []), activeIds: [], accessories: accClone2.list, accCategories: cloneJson(srcAC2, []) };
                     totalOutfits += srcO2.length;
                 } else if (mode === 'update') {
                     var cd3 = getCharData(dd, cn);
-                    var r3 = mergeByName(cd3.outfits, src.outfits || []);
-                    srcC2.forEach(function (c) { if (cd3.categories.indexOf(c) === -1) cd3.categories.push(c); });
+                    ensurePartArrays(cd3);
+                    var accMap3 = mergeAccessoriesByName(cd3.accessories, src.accessories || []);
+                    var mappedOutfits3 = (src.outfits || []).map(function (o) { return remapKitAccIds(cloneJson(o, {}), accMap3); });
+                    var r3 = mergeByName(cd3.outfits, mappedOutfits3);
+                    cd3.categories = mergeCategoryList(cd3.categories, srcC2);
+                    cd3.accCategories = mergeCategoryList(cd3.accCategories, srcAC2);
                     totalOutfits += r3.updated + r3.added;
                 } else {
                     var cd2 = getCharData(dd, cn);
+                    ensurePartArrays(cd2);
+                    var accAppend2 = cloneAccessoryList(src.accessories || [], cd2.accessories);
+                    accAppend2.list.forEach(function (a) { cd2.accessories.push(a); });
+                    cd2.accCategories = mergeCategoryList(cd2.accCategories, srcAC2);
+                    var srcO2 = (src.outfits || []).map(function (o) { return cloneOutfitForImport(o, accAppend2.map); });
                     srcO2.forEach(function (o) { cd2.outfits.push(o); });
-                    srcC2.forEach(function (c) { if (cd2.categories.indexOf(c) === -1) cd2.categories.push(c); });
+                    cd2.categories = mergeCategoryList(cd2.categories, srcC2);
                     totalOutfits += srcO2.length;
                 }
                 if (dd.charNames.indexOf(cn) === -1) dd.charNames.push(cn);
@@ -413,19 +538,24 @@ function processImport(imported, mode) {
         // 如果当前 activePresetId 指向某个预设，刚导入的数据会被旧快照覆盖。
         // 所以 User 穿搭导入走 partition API 直接写入。
         var srcOutfits = imported.outfits || [], srcCats = imported.categories || [];
+        var srcAccessories = imported.accessories || [], srcAccCats = imported.accCategories || [];
         var userPK = currentUserPartKey();
         var userPart = loadPartition(userPK);
+        ensurePartArrays(userPart);
 
         if (mode === 'replace') {
-            userPart.outfits = srcOutfits.map(function (o) { return Object.assign({}, o, { id: genId() }); });
-            userPart.categories = srcCats.slice();
+            var userAccClone = cloneAccessoryList(srcAccessories, []);
+            userPart.outfits = srcOutfits.map(function (o) { return cloneOutfitForImport(o, userAccClone.map); });
+            userPart.categories = cloneJson(srcCats, []);
             userPart.activeIds = [];
+            userPart.accessories = userAccClone.list;
+            userPart.accCategories = cloneJson(srcAccCats, []);
         } else if (mode === 'update') {
-            var ru = mergeByName(userPart.outfits, srcOutfits);
-            srcCats.forEach(function (c) {
-                var catNames2 = getCatNames(userPart.categories);
-                if (catNames2.indexOf(typeof c === 'object' ? c.name : c) === -1) userPart.categories.push(c);
-            });
+            var userAccMap = mergeAccessoriesByName(userPart.accessories, srcAccessories);
+            var mappedUserOutfits = srcOutfits.map(function (o) { return remapKitAccIds(cloneJson(o, {}), userAccMap); });
+            var ru = mergeByName(userPart.outfits, mappedUserOutfits);
+            userPart.categories = mergeCategoryList(userPart.categories, srcCats);
+            userPart.accCategories = mergeCategoryList(userPart.accCategories, srcAccCats);
             // update模式下角色数据走兼容层
             if (imported.chars) {
                 var dd2 = load();
@@ -435,8 +565,12 @@ function processImport(imported, mode) {
                 impNames2.forEach(function (cn) {
                     var src3 = imported.chars[cn]; if (!src3) return;
                     var cd4 = getCharData(dd2, cn);
-                    mergeByName(cd4.outfits, src3.outfits || []);
-                    (src3.categories || []).forEach(function (c) { if (cd4.categories.indexOf(c) === -1) cd4.categories.push(c); });
+                    ensurePartArrays(cd4);
+                    var accMap4 = mergeAccessoriesByName(cd4.accessories, src3.accessories || []);
+                    var mappedOutfits4 = (src3.outfits || []).map(function (o) { return remapKitAccIds(cloneJson(o, {}), accMap4); });
+                    mergeByName(cd4.outfits, mappedOutfits4);
+                    cd4.categories = mergeCategoryList(cd4.categories, src3.categories || []);
+                    cd4.accCategories = mergeCategoryList(cd4.accCategories, src3.accCategories || []);
                     if (dd2.charNames.indexOf(cn) === -1) dd2.charNames.push(cn);
                 });
                 save(dd2);
@@ -449,11 +583,11 @@ function processImport(imported, mode) {
             return;
         } else {
             // append 模式
-            srcOutfits.forEach(function (o) { userPart.outfits.push(Object.assign({}, o, { id: genId() })); });
-            srcCats.forEach(function (c) {
-                var catNames3 = getCatNames(userPart.categories);
-                if (catNames3.indexOf(typeof c === 'object' ? c.name : c) === -1) userPart.categories.push(c);
-            });
+            var userAccAppend = cloneAccessoryList(srcAccessories, userPart.accessories);
+            userAccAppend.list.forEach(function (a) { userPart.accessories.push(a); });
+            userPart.accCategories = mergeCategoryList(userPart.accCategories, srcAccCats);
+            srcOutfits.forEach(function (o) { userPart.outfits.push(cloneOutfitForImport(o, userAccAppend.map)); });
+            userPart.categories = mergeCategoryList(userPart.categories, srcCats);
         }
 
         // 写入 User partition
@@ -477,10 +611,13 @@ function processImport(imported, mode) {
             var impNames = imported.charNames || Object.keys(imported.chars);
             impNames.forEach(function (cn) {
                 var src2 = imported.chars[cn]; if (!src2) return;
+                var accClone4 = cloneAccessoryList(src2.accessories || [], []);
                 dd4.chars[cn] = {
-                    outfits: (src2.outfits || []).map(function (o) { return Object.assign({}, o, { id: genId() }); }),
-                    categories: src2.categories || [],
-                    activeIds: []
+                    outfits: (src2.outfits || []).map(function (o) { return cloneOutfitForImport(o, accClone4.map); }),
+                    categories: cloneJson(src2.categories || [], []),
+                    activeIds: [],
+                    accessories: accClone4.list,
+                    accCategories: cloneJson(src2.accCategories || [], [])
                 };
                 if (dd4.charNames.indexOf(cn) === -1) dd4.charNames.push(cn);
             });
@@ -905,11 +1042,13 @@ function executeMove(selectedIds, targetType, targetChar, presetIdx, targetCat, 
         var p = dd.presets[presetIdx];
         if (!p) { toast('预设不存在', true); return; }
         if (!p.outfits) p.outfits = [];
+        var samePresetPartition = dd.currentView !== 'char' && p.id === dd.activePresetId;
         sourceOutfits.forEach(function (o) {
             var copy = JSON.parse(JSON.stringify(o));
             copy.id = genId();
             copy.category = targetCat;
             copy.subCategory = targetSub || '';
+            if (!samePresetPartition) clearOutfitKits(copy);
             p.outfits.push(copy);
         });
         save(dd);
@@ -929,6 +1068,7 @@ function executeMove(selectedIds, targetType, targetChar, presetIdx, targetCat, 
             copy.id = genId();
             copy.category = targetCat;
             copy.subCategory = targetSub || '';
+            if (!isCurrentView) clearOutfitKits(copy);
             targetOutfits2.push(copy);
         });
         save(dd);
@@ -961,6 +1101,7 @@ function executeMove(selectedIds, targetType, targetChar, presetIdx, targetCat, 
         sourceOutfits.forEach(function (o) {
             o.category = targetCat;
             o.subCategory = targetSub || '';
+            clearOutfitKits(o);
             targetOutfits.push(o);
         });
 
