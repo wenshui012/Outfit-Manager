@@ -13,12 +13,12 @@ export function injectStyles() {
             '@keyframes om-popin{from{opacity:0;transform:scale(.95)}to{opacity:1;transform:scale(1)}}',
 
             /* 全屏遮罩/容器 */
-            '.om-light{--om-bg:#f5f5f7;--om-bg2:#ececef;--om-text:#111;--om-border:rgba(0,0,0,.1);--om-card-bg:rgba(0,0,0,.04);--om-head-bg:rgba(255,255,255,.8);}',
-            '.om-dark{--om-bg:#16161a;--om-bg2:#1e1e24;--om-text:#eee;--om-border:rgba(255,255,255,.08);--om-card-bg:rgba(255,255,255,.05);--om-head-bg:rgba(0,0,0,.3);}',
+            '.om-light{--om-bg:#f5f5f7;--om-bg2:#ececef;--om-text:#111;--om-border:rgba(0,0,0,.14);--om-card-bg:#fff;--om-card-img-bg:#e8e8ee;--om-head-bg:rgba(255,255,255,.8);}',
+            '.om-dark{--om-bg:#16161a;--om-bg2:#1e1e24;--om-text:#eee;--om-border:rgba(255,255,255,.1);--om-card-bg:#202026;--om-card-img-bg:#25252d;--om-head-bg:rgba(0,0,0,.3);}',
             '.om-overlay{position:fixed;top:0;left:0;right:0;bottom:0;width:100vw;height:100dvh;z-index:2147483647;',
             'background:var(--om-bg,var(--SmartThemeBackgroundColor,#16161a));',
             'color:var(--om-text,var(--SmartThemeBodyColor,#eee));',
-            'display:flex;flex-direction:column;color:var(--SmartThemeBodyColor,#eee);',
+            'display:flex;flex-direction:column;',
             'animation:om-fadein .18s ease;font-size:14px;}',
 
             /* 主框 全屏填满 */
@@ -134,21 +134,24 @@ export function injectStyles() {
             '.om-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(108px,1fr));gap:9px;}',
 
             /* ══ 添加卡片 ══ */
-            '.om-add-card{border:2px dashed rgba(127,127,127,.22);border-radius:10px;',
+            '.om-add-card{border:2px dashed var(--om-border,rgba(127,127,127,.22));border-radius:10px;',
             'display:flex;flex-direction:column;align-items:center;justify-content:center;gap:6px;',
-            'cursor:pointer;opacity:.55;transition:all .2s;font-size:.8em;color:inherit;}',
+            'cursor:pointer;opacity:.75;transition:all .2s;font-size:.8em;color:var(--om-text,#111);',
+            'background:var(--om-card-bg,rgba(127,127,127,.08));}',
             '.om-add-card:hover{opacity:1;border-color:var(--SmartThemeQuoteColor,#7c6daf);',
             'color:var(--SmartThemeQuoteColor,#7c6daf);background:rgba(127,127,127,.04);}',
             '.om-add-card i{font-size:1.4em;}',
 
             /* ══ 穿搭卡片 ══ */
             '.om-card{border-radius:10px;overflow:hidden;position:relative;cursor:pointer;',
-            'transition:all .18s;border:2px solid transparent;display:flex;flex-direction:column;}',
+            'transition:all .18s;border:2px solid var(--om-border,rgba(127,127,127,.18));',
+            'display:flex;flex-direction:column;background:var(--om-card-bg,rgba(127,127,127,.08));',
+            'color:var(--om-text,#111);}',
             '.om-card:hover{transform:translateY(-2px);box-shadow:0 6px 20px rgba(0,0,0,.25);}',
             '.om-card.on{border-color:var(--SmartThemeQuoteColor,#7c6daf);',
             'box-shadow:0 0 0 1px var(--SmartThemeQuoteColor,#7c6daf),0 4px 16px rgba(0,0,0,.2);}',
             /* 图片区 */
-            '.om-card-img{width:100%;aspect-ratio:3/4;position:relative;background:rgba(127,127,127,.1);',
+            '.om-card-img{width:100%;aspect-ratio:3/4;position:relative;background:var(--om-card-img-bg,rgba(127,127,127,.12));',
             'display:flex;align-items:center;justify-content:center;overflow:hidden;flex-shrink:0;}',
             '.om-card-img img{width:100%;height:100%;object-fit:cover;display:block;}',
             '.om-lazy-img{opacity:0;transition:opacity .25s ease;}',
@@ -156,7 +159,8 @@ export function injectStyles() {
             /* 底部渐变文字遮罩 */
             /* 触屏：点击过的卡片菜单常显 */
             '@media (hover:none){.om-card-menu{opacity:.75 !important;}}',
-            '.om-card-info{padding:5px 7px 6px;background:var(--om-card-bg,rgba(127,127,127,.06));min-height:36px;box-sizing:border-box;}',
+            '.om-card-info{padding:5px 7px 6px;background:var(--om-card-bg,rgba(127,127,127,.08));',
+            'color:var(--om-text,#111);min-height:36px;box-sizing:border-box;}',
             '.om-card-name{font-size:.8em;font-weight:600;line-height:1.3;',
             'white-space:nowrap;overflow:hidden;text-overflow:ellipsis;',
             'color:var(--om-text,#eee);}',

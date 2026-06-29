@@ -328,6 +328,12 @@ function setupGridLazyImages(area) {
     }, { root: area, rootMargin: '400px 0px', threshold: 0.01 });
 
     imgs.forEach(function (img) { gridImageObserver.observe(img); });
+    Array.prototype.slice.call(imgs, 0, 12).forEach(loadImg);
+    setTimeout(function () {
+        imgs.forEach(function (img) {
+            if (img && img.dataset.loaded !== '1') loadImg(img);
+        });
+    }, 350);
 }
 
 // ── 打开全屏主界面 ────────────────────────────────────────
@@ -1482,6 +1488,12 @@ function setupAccLazyImages(area) {
         });
     }, { root: area, rootMargin: '400px 0px', threshold: 0.01 });
     imgs.forEach(function (img) { obs.observe(img); });
+    Array.prototype.slice.call(imgs, 0, 12).forEach(loadImg);
+    setTimeout(function () {
+        imgs.forEach(function (img) {
+            if (img && img.dataset.loaded !== '1') loadImg(img);
+        });
+    }, 350);
 }
 
 // ── 底栏状态（使用 loadActivePartitions 跨分包显示）────────
