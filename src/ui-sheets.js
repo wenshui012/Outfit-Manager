@@ -2,7 +2,7 @@
 // 操作菜单、编辑面板、预设、设置、分类管理、Lightbox、导入导出、批量描述
 
 import { load, save, loadMeta, saveMeta, loadCurrent, saveCurrent, loadPartition, savePartition, currentPartKey, syncActivePartitions, charNameById, isServerMode } from './db.js';
-import { def, getCharData, getViewOutfits, getViewCategories, getViewActiveIds, setViewActiveIds, getById, getViewById, isActive, getCatNames, getSubCats, findCatObj, hasSubCats, partGetById, partIsActive, partGetAccById, cleanAccIdFromKits, getKitAccessories, ensureOutfitKits, SHARED_CHAR_KEY, SHARED_CHAR_LABEL } from './data.js';
+import { def, getCharData, getViewOutfits, getViewCategories, getViewActiveIds, setViewActiveIds, getById, getViewById, isActive, getCatNames, getSubCats, findCatObj, hasSubCats, partGetById, partIsActive, partGetAccById, cleanAccIdFromKits, getActiveKit, getKitAccessories, ensureOutfitKits, SHARED_CHAR_KEY, SHARED_CHAR_LABEL } from './data.js';
 import { genId, esc, toast, getPopupLayer, compressImage } from './utils.js';
 import { generateSingleDescription, batchGenerateDescriptions, openModelPicker, normalizeEndpoint } from './api.js';
 import { state, fn } from './bridge.js';
@@ -339,7 +339,8 @@ function buildEditKitManageHtml(outfit, part) {
     if (kits.length === 0) {
         body = '<div class="om-kit-empty">暂无套装</div>';
     } else {
-        body = kits.map(function (kit) {
+        body = (outfit.activeKitId ? '<button class="om-btn om-btn-outline om-kit-deactivate" data-kit-action="deactivate"><i class="fa-solid fa-circle-minus"></i> 取消当前套装</button>' : '') +
+        kits.map(function (kit) {
             var isActiveKit = outfit.activeKitId === kit.id;
             var accs = getKitAccessories(part, kit);
             var accHtml = accs.length === 0
@@ -364,6 +365,30 @@ function buildEditKitManageHtml(outfit, part) {
     return '<div class="om-field" id="om-kit-manage-holder"><label>套装 / 配饰 <span class="om-hint">当前穿搭</span></label>' + body + '</div>';
 }
 
+function buildEditImageAreaHtml(outfit, part, imageData) {
+    var normalPh = '<div class="om-imgph"><i class="fa-regular fa-image"></i><span>点击或拖拽上传</span></div>';
+    if (outfit) {
+        ensureOutfitKits(outfit);
+        var activeKit = getActiveKit(outfit);
+        var kitAccs = activeKit ? getKitAccessories(part, activeKit) : [];
+        if (activeKit && kitAccs.length > 0) {
+            var mainImg = imageData
+                ? '<img class="om-showcase-main-img" src="' + imageData + '" alt="' + esc(outfit.name || '穿搭') + '" />'
+                : '<div class="om-imgph om-showcase-ph"><i class="fa-regular fa-image"></i><span>主体图片</span></div>';
+            var accImgs = kitAccs.map(function (acc) {
+                return acc.imageData
+                    ? '<img class="om-showcase-acc-img" src="' + acc.imageData + '" title="' + esc(acc.name) + '" alt="' + esc(acc.name) + '" />'
+                    : '<div class="om-showcase-acc-ph" title="' + esc(acc.name) + '">' + esc(acc.name) + '</div>';
+            }).join('');
+            return '<div class="om-showcase">' +
+                '<div class="om-showcase-main">' + mainImg + '</div>' +
+                '<div class="om-showcase-accs">' + accImgs + '</div>' +
+                '</div>';
+        }
+    }
+    return imageData ? '<img src="' + imageData + '" />' : normalPh;
+}
+
 
 function openEditSheet(outfit, defaultCat, defaultSubCat) {
     var d = load(); // still need for tag suggestions (cross-partition)
@@ -386,6 +411,7 @@ function openEditSheet(outfit, defaultCat, defaultSubCat) {
     var subOpts = '<option value="">无子分类</option>' +
         subCats.map(function (sc) { return '<option value="' + esc(sc) + '"' + (sc === curSub ? ' selected' : '') + '>' + esc(sc) + '</option>'; }).join('');
     var kitManageHtml = outfit ? buildEditKitManageHtml(outfit, curPart) : '';
+    var imageAreaHtml = buildEditImageAreaHtml(outfit, curPart, editImgData);
 
     var sheet = createSheet([
         '<div class="om-sheet-title"><i class="fa-solid fa-' + (outfit ? 'pen' : 'plus') + '"></i>' + (outfit ? '编辑穿搭' : '添加穿搭') + '</div>',
@@ -401,7 +427,7 @@ function openEditSheet(outfit, defaultCat, defaultSubCat) {
         '<button class="om-tag-expand-btn" id="om-tag-expand"><i class="fa-solid fa-tags"></i> 管理</button>',
         '</div></div>',
         '<div class="om-field"><label>参考图片 <span class="om-hint">可选，自动压缩</span></label>',
-        '<div class="om-imgarea" id="om-dimgarea">' + (editImgData ? '<img src="' + editImgData + '" />' : '<div class="om-imgph"><i class="fa-regular fa-image"></i><span>点击或拖拽上传</span></div>') + '</div>',
+        '<div class="om-imgarea" id="om-dimgarea">' + imageAreaHtml + '</div>',
         '<input type="file" id="om-dfile" accept="image/*" style="display:none" />',
         '<div class="om-img-actions"><button class="om-btn om-btn-outline" id="om-dpick" style="font-size:.8em"><i class="fa-solid fa-image"></i> 选择图片</button>' +
         (!outfit ? '<button class="om-btn om-btn-outline" id="om-dbatch" style="font-size:.8em"><i class="fa-solid fa-images"></i> 批量导入</button>' : '') +
@@ -430,6 +456,14 @@ function openEditSheet(outfit, defaultCat, defaultSubCat) {
         bindKitManageEvents();
     }
 
+    function refreshImageArea() {
+        var area = sheet.querySelector('#om-dimgarea');
+        if (!area) return;
+        var p = loadCurrent();
+        var target = outfit ? (partGetById(p, outfit.id) || outfit) : null;
+        area.innerHTML = buildEditImageAreaHtml(target, p, editImgData);
+    }
+
     function updateKitManage(mutator) {
         if (!outfit) return;
         var p = loadCurrent();
@@ -442,6 +476,7 @@ function openEditSheet(outfit, defaultCat, defaultSubCat) {
         saveCurrent(p);
         fn.renderGrid(); fn.renderBottomStatus(); fn.updateBtn();
         refreshKitManageHolder();
+        refreshImageArea();
     }
 
     function bindKitManageEvents() {
@@ -453,7 +488,13 @@ function openEditSheet(outfit, defaultCat, defaultSubCat) {
                 e.stopPropagation();
                 var action = btn.dataset.kitAction;
                 var kitId = btn.dataset.kitId;
-                if (action === 'activate') {
+                if (action === 'deactivate') {
+                    updateKitManage(function (target) {
+                        target.activeKitId = null;
+                        clearKitDraftIfOutfit(target.id);
+                        toast('已取消套装');
+                    });
+                } else if (action === 'activate') {
                     updateKitManage(function (target) {
                         if (!findKitById(target, kitId)) return false;
                         target.activeKitId = kitId;
@@ -553,7 +594,7 @@ function openEditSheet(outfit, defaultCat, defaultSubCat) {
     var imgArea = sheet.querySelector('#om-dimgarea');
     function setImg(data) {
         editImgData = data;
-        imgArea.innerHTML = data ? '<img src="' + data + '" />' : '<div class="om-imgph"><i class="fa-regular fa-image"></i><span>点击或拖拽上传</span></div>';
+        refreshImageArea();
         var clrOld = sheet.querySelector('#om-dclr'); var acts = sheet.querySelector('.om-img-actions');
         if (data && !clrOld && acts) {
             var b2 = document.createElement('button'); b2.className = 'om-btn om-btn-danger'; b2.id = 'om-dclr'; b2.style.fontSize = '.8em'; b2.textContent = '删除图片';

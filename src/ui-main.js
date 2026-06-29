@@ -1404,7 +1404,7 @@ function openDetailPanel(groups) {
                 esc(w.name) + '<button class="om-detail-tag-x" data-id="' + esc(w.id) + '" data-pk="' + esc(w.partKey) + '">&#x2715;</button></span>';
 
             if (useDraft || (kit && accs.length > 0)) {
-                rowHtml += '<div class="om-kit-row' + (focused ? ' focus' : '') + '">' + subjectTag + '<div class="om-kit-accs">';
+                rowHtml += '<div class="om-kit-row' + (focused ? ' focus' : '') + '">' + subjectTag + '<div class="om-kit-accs-scroll">';
                 accs.forEach(function (acc) {
                     var disabled = !useDraft && kit && Array.isArray(kit.disabledAccIds) && kit.disabledAccIds.indexOf(acc.id) !== -1;
                     rowHtml += '<button class="om-kit-acc-tag' + (disabled ? ' disabled' : '') + '" data-pk="' + esc(w.partKey) + '" data-outfit-id="' + esc(w.id) + '" data-acc-id="' + esc(acc.id) + '" data-draft="' + (useDraft ? '1' : '0') + '">' + esc(acc.name) + '</button>';
@@ -1416,8 +1416,9 @@ function openDetailPanel(groups) {
                 looseHtml += subjectTag;
             }
         });
+        if (looseHtml) html += '<div class="om-detail-loose-row">' + looseHtml + '</div>';
+        if (looseHtml && rowHtml) html += '<div class="om-detail-divider"></div>';
         if (rowHtml) html += '<div class="om-kit-rows">' + rowHtml + '</div>';
-        if (looseHtml) html += '<div class="om-detail-tags">' + looseHtml + '</div>';
     });
     panel.innerHTML = html;
     bottombar.appendChild(panel);
