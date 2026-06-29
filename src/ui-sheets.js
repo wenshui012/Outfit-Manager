@@ -820,20 +820,42 @@ function openPresetsSheet() {
 }
 
 // ── 设置 Bottom Sheet ─────────────────────────────────────
+function getSettingsDataStats() {
+    var meta = loadMeta();
+    var keys = ['user:__default__'];
+    (meta.presets || []).forEach(function (p) { if (p && p.partKey && keys.indexOf(p.partKey) === -1) keys.push(p.partKey); });
+    (meta.charIndex || []).forEach(function (ci) { if (ci && ci.partKey && keys.indexOf(ci.partKey) === -1) keys.push(ci.partKey); });
+
+    var outfits = 0, accessories = 0, images = 0;
+    keys.forEach(function (pk) {
+        var part = loadPartition(pk);
+        var os = part.outfits || [];
+        var accs = part.accessories || [];
+        outfits += os.length;
+        accessories += accs.length;
+        images += os.filter(function (o) { return !!o.imageData; }).length;
+        images += accs.filter(function (a) { return !!a.imageData; }).length;
+    });
+    return {
+        outfits: outfits,
+        accessories: accessories,
+        images: images,
+        presets: (meta.presets || []).length,
+        storage: isServerMode() ? '服务器存储' : '本地存储'
+    };
+}
+
+function buildPromptTemplateOptions(apiVision) {
+    var list = apiVision.promptTemplates || [];
+    if (list.length === 0) return '<option value="">暂无模板</option>';
+    return '<option value="">选择模板…</option>' + list.map(function (tpl) {
+        return '<option value="' + esc(tpl.id) + '"' + (apiVision.activePromptTemplateId === tpl.id ? ' selected' : '') + '>' + esc(tpl.name || '未命名模板') + '</option>';
+    }).join('');
+}
+
 function openSettingsSheet() {
     var d = load();
-    var imgCount = d.outfits.filter(function (o) { return !!o.imageData; }).length;
-    var totalOutfits = d.outfits.length;
-    // 统计角色穿搭
-    if (d.chars) {
-        for (var _cn in d.chars) {
-            var _co = d.chars[_cn];
-            if (_co && Array.isArray(_co.outfits)) {
-                totalOutfits += _co.outfits.length;
-                imgCount += _co.outfits.filter(function (o) { return !!o.imageData; }).length;
-            }
-        }
-    }
+    var stats = getSettingsDataStats();
 
     var sheet = createSheet([
         '<div class="om-sheet-title"><i class="fa-solid fa-sliders"></i>设置</div>',
@@ -883,6 +905,8 @@ function openSettingsSheet() {
         '<div class="om-setting-row"><label>模型名称</label><div style="display:flex;gap:6px;align-items:center"><input type="text" id="om-api-v-model" placeholder="gpt-4o / gemini-2.0-flash / claude-sonnet-4-20250514" value="' + esc(d.apiVision.model) + '" style="flex:1;background:rgba(127,127,127,.08);border:1px solid rgba(127,127,127,.2);border-radius:8px;color:inherit;padding:7px 10px;font-size:.85em;box-sizing:border-box;font-family:inherit" /><button class="om-btn om-btn-outline" id="om-api-v-model-fetch" style="font-size:.75em;white-space:nowrap;padding:7px 10px;flex-shrink:0"><i class="fa-solid fa-rotate"></i> 拉取</button></div></div>',
         '<div class="om-setting-row"><label>描述生成 Prompt</label><textarea id="om-api-v-prompt" rows="3" style="background:rgba(127,127,127,.08);border:1px solid rgba(127,127,127,.2);border-radius:8px;color:inherit;padding:7px 10px;font-size:.85em;width:100%;box-sizing:border-box;resize:vertical;font-family:inherit">' + esc(d.apiVision.prompt) + '</textarea></div>',
         '<div class="om-setting-row"><label>单品描述 Prompt <span class="om-hint">{{accCategory}} = 单品分类名</span></label><textarea id="om-api-v-acc-prompt" rows="3" style="background:rgba(127,127,127,.08);border:1px solid rgba(127,127,127,.2);border-radius:8px;color:inherit;padding:7px 10px;font-size:.85em;width:100%;box-sizing:border-box;resize:vertical;font-family:inherit">' + esc(d.apiVision.accPrompt || '') + '</textarea></div>',
+        '<div class="om-setting-row"><label>Prompt 模板</label><select id="om-api-v-template" style="background:rgba(127,127,127,.08);border:1px solid rgba(127,127,127,.2);border-radius:8px;color:inherit;padding:7px 10px;font-size:.85em;width:100%;box-sizing:border-box;font-family:inherit">' + buildPromptTemplateOptions(d.apiVision) + '</select></div>',
+        '<div class="om-btn-row" style="margin-top:6px"><button class="om-btn om-btn-outline" id="om-api-v-template-save" style="font-size:.78em;flex:1 1 110px"><i class="fa-solid fa-floppy-disk"></i> 保存当前</button><button class="om-btn om-btn-outline" id="om-api-v-template-ren" style="font-size:.78em;flex:1 1 90px"><i class="fa-solid fa-pen"></i> 重命名</button><button class="om-btn om-btn-outline" id="om-api-v-template-del" style="font-size:.78em;flex:1 1 90px"><i class="fa-solid fa-trash"></i> 删除</button></div>',
         '<div class="om-setting-row om-row-inline"><label>覆盖已有描述</label><input type="checkbox" class="om-chk" id="om-api-v-overwrite"' + (d.apiVision.overwrite ? ' checked' : '') + ' /></div>',
         '<div class="om-btn-row" style="margin-top:6px"><button class="om-btn om-btn-outline" id="om-api-v-test" style="font-size:.8em"><i class="fa-solid fa-flask-vial"></i> 测试连接</button></div>',
 
@@ -895,7 +919,7 @@ function openSettingsSheet() {
 
         '<div class="om-divider"></div>',
         '<div class="om-sec-title">数据</div>',
-        '<div class="om-storage-info">' + totalOutfits + ' 套穿搭 / ' + imgCount + ' 张图片 / ' + (d.presets ? d.presets.length : 0) + ' 个预设 | ' + (isServerMode() ? '服务器存储' : 'IndexedDB 存储') + '</div>',
+        '<div class="om-storage-info">' + stats.outfits + ' 套穿搭 / ' + stats.accessories + ' 件单品 / ' + stats.images + ' 张图片 / ' + stats.presets + ' 个预设 / ' + stats.storage + '</div>',
         '<div class="om-btn-row" style="margin-top:8px">',
         '<button class="om-btn om-btn-outline" id="om-exp"><i class="fa-solid fa-download"></i> 导出</button>',
         '<button class="om-btn om-btn-outline" id="om-imp"><i class="fa-solid fa-upload"></i> 导入</button>',
@@ -911,9 +935,9 @@ function openSettingsSheet() {
         '<div id="om-fab-preview" style="width:48px;height:48px;overflow:hidden;display:flex;align-items:center;justify-content:center;flex-shrink:0;">' +
         (d.fabImage ? '<img src="' + d.fabImage + '" style="width:100%;height:100%;object-fit:contain;" />' : '<div style="width:100%;height:100%;border-radius:50%;background:var(--SmartThemeQuoteColor,#7c6daf);display:flex;align-items:center;justify-content:center;"><i class="fa-solid fa-shirt" style="color:#fff;font-size:1.1em;"></i></div>') +
         '</div>' +
-        '<div style="display:flex;flex-direction:column;gap:5px;flex:1;">' +
-        '<button class="om-btn om-btn-outline" id="om-fab-pick" style="font-size:.8em;"><i class="fa-solid fa-image"></i> 选择图片</button>' +
-        '<button class="om-btn om-btn-outline" id="om-fab-reset" style="font-size:.8em;' + (d.fabImage ? '' : 'opacity:.35;pointer-events:none;') + '"><i class="fa-solid fa-rotate-left"></i> 恢复默认</button>' +
+        '<div style="display:flex;gap:6px;flex:1;flex-wrap:wrap;">' +
+        '<button class="om-btn om-btn-outline" id="om-fab-pick" style="font-size:.8em;flex:1 1 120px;"><i class="fa-solid fa-image"></i> 选择图片</button>' +
+        '<button class="om-btn om-btn-outline" id="om-fab-reset" style="font-size:.8em;flex:1 1 120px;' + (d.fabImage ? '' : 'opacity:.35;pointer-events:none;') + '"><i class="fa-solid fa-rotate-left"></i> 恢复默认</button>' +
         '</div>' +
         '<input type="file" id="om-fab-file" accept="image/*" style="display:none" />' +
         '</div></div>',
@@ -940,6 +964,78 @@ function openSettingsSheet() {
     sheet.querySelector('#om-api-v-prompt').addEventListener('input', function () { var m = loadMeta(); m.apiVision.prompt = this.value; saveMeta(m); });
     sheet.querySelector('#om-api-v-acc-prompt').addEventListener('input', function () { var m = loadMeta(); m.apiVision.accPrompt = this.value; saveMeta(m); });
     sheet.querySelector('#om-api-v-overwrite').addEventListener('change', function () { var m = loadMeta(); m.apiVision.overwrite = this.checked; saveMeta(m); });
+
+    function refreshPromptTemplateSelect() {
+        var m = loadMeta();
+        var sel = sheet.querySelector('#om-api-v-template');
+        if (sel) sel.innerHTML = buildPromptTemplateOptions(m.apiVision);
+    }
+    function findPromptTemplate(apiVision, id) {
+        var list = apiVision.promptTemplates || [];
+        for (var i = 0; i < list.length; i++) {
+            if (list[i].id === id) return list[i];
+        }
+        return null;
+    }
+    sheet.querySelector('#om-api-v-template').addEventListener('change', function () {
+        var id = this.value;
+        if (!id) return;
+        var m = loadMeta();
+        var tpl = findPromptTemplate(m.apiVision, id);
+        if (!tpl) { toast('模板不存在', true); refreshPromptTemplateSelect(); return; }
+        m.apiVision.prompt = tpl.prompt || '';
+        m.apiVision.accPrompt = tpl.accPrompt || '';
+        m.apiVision.activePromptTemplateId = tpl.id;
+        saveMeta(m);
+        sheet.querySelector('#om-api-v-prompt').value = m.apiVision.prompt;
+        sheet.querySelector('#om-api-v-acc-prompt').value = m.apiVision.accPrompt;
+        toast('已切换到模板「' + (tpl.name || '未命名模板') + '」');
+    });
+    sheet.querySelector('#om-api-v-template-save').addEventListener('click', function () {
+        var m = loadMeta();
+        if (!Array.isArray(m.apiVision.promptTemplates)) m.apiVision.promptTemplates = [];
+        var defaultName = '模板' + (m.apiVision.promptTemplates.length + 1);
+        var name = prompt('模板名称：', defaultName);
+        if (!name || !name.trim()) return;
+        var tpl = {
+            id: 'pt_' + genId(),
+            name: name.trim(),
+            prompt: sheet.querySelector('#om-api-v-prompt').value,
+            accPrompt: sheet.querySelector('#om-api-v-acc-prompt').value
+        };
+        m.apiVision.prompt = tpl.prompt;
+        m.apiVision.accPrompt = tpl.accPrompt;
+        m.apiVision.promptTemplates.push(tpl);
+        m.apiVision.activePromptTemplateId = tpl.id;
+        saveMeta(m);
+        refreshPromptTemplateSelect();
+        toast('已保存 Prompt 模板');
+    });
+    sheet.querySelector('#om-api-v-template-ren').addEventListener('click', function () {
+        var m = loadMeta();
+        var id = sheet.querySelector('#om-api-v-template').value || m.apiVision.activePromptTemplateId;
+        var tpl = findPromptTemplate(m.apiVision, id);
+        if (!tpl) { toast('请先选择模板', true); return; }
+        var name = prompt('重命名模板：', tpl.name || '未命名模板');
+        if (!name || !name.trim()) return;
+        tpl.name = name.trim();
+        saveMeta(m);
+        refreshPromptTemplateSelect();
+        toast('已重命名模板');
+    });
+    sheet.querySelector('#om-api-v-template-del').addEventListener('click', function () {
+        var m = loadMeta();
+        var id = sheet.querySelector('#om-api-v-template').value || m.apiVision.activePromptTemplateId;
+        var tpl = findPromptTemplate(m.apiVision, id);
+        if (!tpl) { toast('请先选择模板', true); return; }
+        if (!confirm('删除 Prompt 模板「' + (tpl.name || '未命名模板') + '」？\n当前 Prompt 内容不会被清空。')) return;
+        m.apiVision.promptTemplates = (m.apiVision.promptTemplates || []).filter(function (t) { return t.id !== id; });
+        if (m.apiVision.activePromptTemplateId === id) m.apiVision.activePromptTemplateId = null;
+        saveMeta(m);
+        refreshPromptTemplateSelect();
+        toast('已删除模板');
+    });
+
     sheet.querySelector('#om-api-v-test').addEventListener('click', function () {
         var m = loadMeta();
         if (!m.apiVision.endpoint || !m.apiVision.key || !m.apiVision.model) { toast('请先填写 API 地址、Key 和模型名称', true); return; }
