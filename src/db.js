@@ -1448,6 +1448,11 @@ export function save(d) {
     var newIndex = [];
     // 保留通用衣柜
     oldIndex.forEach(function (ci) { if (ci.id === SHARED_CHAR_KEY) newIndex.push(ci); });
+    if (newIndex.length === 0) {
+        var sharedPartKey = 'char:__shared__';
+        if (!partCache[sharedPartKey]) savePartition(sharedPartKey, defPartition());
+        newIndex.push({ id: SHARED_CHAR_KEY, name: SHARED_CHAR_KEY, partKey: sharedPartKey });
+    }
 
     dNames.forEach(function (name) {
         if (oldNameSet[name]) {

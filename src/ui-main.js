@@ -251,6 +251,52 @@ function batchDeleteAccessories(accIds) {
     toast('已删除 ' + accIds.length + ' 个配饰');
 }
 
+function openAccBatchCategorySheet(accIds) {
+    accIds = uniqueIds(accIds || []);
+    if (accIds.length === 0) { toast('请先选择配饰', true); return; }
+    var part = loadCurrent();
+    var cats = part.accCategories || [];
+    var catNames = getCatNames(cats);
+    if (catNames.length === 0) { toast('还没有配饰分类，请先在设置中添加', true); return; }
+    var itemsHtml = '';
+    cats.forEach(function (catObj) {
+        var catName = typeof catObj === 'object' ? catObj.name : catObj;
+        var children = typeof catObj === 'object' ? (catObj.children || []) : [];
+        var n = (part.accessories || []).filter(function (a) { return a.category === catName; }).length;
+        itemsHtml += '<div class="om-cat-item om-acc-bcat-pick" data-cat="' + esc(catName) + '" data-sub="" style="cursor:pointer;font-weight:600"><span class="om-cat-name">' + esc(catName) + '</span><span class="om-cat-count">' + n + '件</span></div>';
+        children.forEach(function (sc) {
+            var sn = (part.accessories || []).filter(function (a) { return a.category === catName && a.subCategory === sc; }).length;
+            itemsHtml += '<div class="om-cat-item om-acc-bcat-pick" data-cat="' + esc(catName) + '" data-sub="' + esc(sc) + '" style="cursor:pointer;padding-left:28px;opacity:.85"><span class="om-cat-name"><i class="fa-solid fa-turn-up fa-rotate-90" style="font-size:.6em;opacity:.3;margin-right:6px"></i>' + esc(sc) + '</span><span class="om-cat-count">' + sn + '件</span></div>';
+        });
+    });
+    var sheet = fn.createSheet([
+        '<div class="om-sheet-title"><i class="fa-solid fa-folder"></i>选择单品分类</div>',
+        '<div class="om-hint" style="margin-bottom:10px">为已选 ' + accIds.length + ' 件单品设置分类</div>',
+        itemsHtml,
+        '<div class="om-divider"></div>',
+        '<div class="om-cat-item om-acc-bcat-pick" data-cat="" data-sub="" style="cursor:pointer;opacity:.6"><span class="om-cat-name">清除分类</span></div>',
+    ].join(''));
+    sheet.querySelectorAll('.om-acc-bcat-pick').forEach(function (item) {
+        item.addEventListener('click', function () {
+            var targetCat = item.dataset.cat;
+            var targetSub = item.dataset.sub;
+            var p = loadCurrent();
+            (p.accessories || []).forEach(function (acc) {
+                if (accIds.indexOf(acc.id) !== -1) {
+                    acc.category = targetCat;
+                    acc.subCategory = targetSub || '';
+                }
+            });
+            saveCurrent(p);
+            fn.closeSheet(sheet);
+            state.batchSelected = [];
+            fn.renderAccCatbar();
+            renderGrid();
+            toast('已更新 ' + accIds.length + ' 件单品分类');
+        });
+    });
+}
+
 function setupGridLazyImages(area) {
     if (gridImageObserver) { gridImageObserver.disconnect(); gridImageObserver = null; }
 
@@ -672,7 +718,7 @@ function renderCharDropdown(vbar, d, query) {
             var idx = dd.charNames.indexOf(cn); if (idx !== -1) dd.charNames.splice(idx, 1);
             if (dd.charFavorites) { var fi = dd.charFavorites.indexOf(cn); if (fi !== -1) dd.charFavorites.splice(fi, 1); }
             if (dd.charGroups) { for (var g in dd.charGroups) { var gi = dd.charGroups[g].indexOf(cn); if (gi !== -1) dd.charGroups[g].splice(gi, 1); } }
-            if (dd.currentChar === cn) dd.currentChar = '';
+            if (dd.currentChar === cn) dd.currentChar = SHARED_CHAR_KEY;
             save(dd); renderViewbar(); renderCatbar(); renderGrid(); renderBottomStatus(); toast('已删除角色「' + cn + '」');
         });
     });
@@ -1246,11 +1292,13 @@ function renderAccGrid(area, part) {
         if (state.batchMode) {
             batchArea.style.display = '';
             batchArea.innerHTML = '<div class="om-batch-bar">' +
-                '<span class="om-batch-info">已选&nbsp;<b id="om-batch-count">' + state.batchSelected.length + '</b>&nbsp;个</span>' +
+                '<span class="om-batch-info">已选&nbsp;<b id="om-batch-count">' + state.batchSelected.length + '</b>&nbsp;件</span>' +
                 '<div class="om-batch-divider" style="width:1px;height:16px;background:rgba(127,127,127,.25);flex-shrink:0;margin:0 2px;"></div>' +
                 '<div class="om-batch-acts">' +
                 '<button class="om-batch-btn" id="om-acc-batch-selall">全选</button>' +
-                '<button class="om-batch-btn" id="om-acc-batch-invert">反选</button>' +
+                '<button class="om-batch-btn" id="om-acc-batch-none">取消</button>' +
+                '<button class="om-batch-btn" id="om-acc-batch-cat"><i class="fa-solid fa-folder"></i> 分类</button>' +
+                '<button class="om-batch-btn" id="om-acc-batch-move"><i class="fa-solid fa-arrow-right-arrow-left"></i> 移动</button>' +
                 '<button class="om-batch-btn" id="om-acc-batch-desc"><i class="fa-solid fa-wand-magic-sparkles"></i> AI描述</button>' +
                 '<button class="om-batch-btn danger" id="om-acc-batch-del"><i class="fa-solid fa-trash"></i> 删除</button>' +
                 '</div></div>';
@@ -1309,17 +1357,34 @@ function renderAccGrid(area, part) {
 
     if (state.batchMode && batchArea) {
         var selall = batchArea.querySelector('#om-acc-batch-selall');
-        var invert = batchArea.querySelector('#om-acc-batch-invert');
+        var selnone = batchArea.querySelector('#om-acc-batch-none');
+        var catBtn = batchArea.querySelector('#om-acc-batch-cat');
+        var moveBtn = batchArea.querySelector('#om-acc-batch-move');
         var delBtn = batchArea.querySelector('#om-acc-batch-del');
         var descBtn = batchArea.querySelector('#om-acc-batch-desc');
         if (selall) selall.addEventListener('click', function () {
             state.batchSelected = list.map(function (a) { return a.id; });
             renderGrid();
         });
-        if (invert) invert.addEventListener('click', function () {
-            var visibleIds = list.map(function (a) { return a.id; });
-            state.batchSelected = visibleIds.filter(function (id) { return state.batchSelected.indexOf(id) === -1; });
+        if (selnone) selnone.addEventListener('click', function () {
+            state.batchSelected = [];
             renderGrid();
+        });
+        if (catBtn) catBtn.addEventListener('click', function () {
+            openAccBatchCategorySheet(state.batchSelected.slice());
+        });
+        if (moveBtn) moveBtn.addEventListener('click', function () {
+            if (state.batchSelected.length === 0) { toast('请先选择配饰', true); return; }
+            if (fn.openAccMoveToPanel) {
+                fn.openAccMoveToPanel(state.batchSelected.slice(), function () {
+                    state.batchSelected = [];
+                    state.batchMode = false;
+                    updateBatchButtonState();
+                    fn.renderAccCatbar();
+                    renderGrid();
+                    renderBottomStatus();
+                });
+            }
         });
         if (delBtn) delBtn.addEventListener('click', function () {
             batchDeleteAccessories(state.batchSelected.slice());

@@ -712,9 +712,12 @@ function openPresetsSheet() {
         ? '<div class="om-empty"><i class="fa-solid fa-bookmark"></i><span>还没有预设</span></div>'
         : d.presets.map(function (p, idx) {
             var isCurrent = (activePresetId && p.id === activePresetId);
+            var outfitCount = (p.outfits || []).length;
+            var accCount = (p.accessories || []).length;
+            var countText = outfitCount + ' 套穿搭' + (accCount > 0 ? ' / ' + accCount + ' 件单品' : '');
             return '<div class="om-preset-item' + (isCurrent ? ' current' : '') + '" data-idx="' + idx + '">' +
                 '<div class="om-preset-name">' + esc(p.name) + (isCurrent ? ' <span style="font-size:.7em;opacity:.5;font-weight:400">（当前）</span>' : '') + '</div>' +
-                '<div class="om-preset-count">包含 ' + (p.outfits || []).length + ' 套穿搭</div>' +
+                '<div class="om-preset-count">包含 ' + esc(countText) + '</div>' +
                 '<button class="om-btn-sm om-preset-ren" data-idx="' + idx + '" title="重命名"><i class="fa-solid fa-pen"></i></button>' +
                 '<button class="om-btn-sm om-preset-del" data-idx="' + idx + '" title="删除"><i class="fa-solid fa-trash"></i></button>' +
                 '</div>';
@@ -761,6 +764,8 @@ function openPresetsSheet() {
                 dd.presets[i].outfits = JSON.parse(JSON.stringify(dd.outfits));
                 dd.presets[i].categories = JSON.parse(JSON.stringify(dd.categories));
                 dd.presets[i].activeIds = JSON.parse(JSON.stringify(dd.activeIds));
+                dd.presets[i].accessories = JSON.parse(JSON.stringify(dd.accessories || []));
+                dd.presets[i].accCategories = JSON.parse(JSON.stringify(dd.accCategories || []));
                 dd.presets[i].updatedAt = Date.now();
                 break;
             }
@@ -883,7 +888,10 @@ function openSettingsSheet() {
 
         '<div class="om-divider"></div>',
         '<div class="om-sec-title">分类管理</div>',
-        '<button class="om-btn om-btn-outline" id="om-open-cats" style="width:100%;text-align:left"><i class="fa-solid fa-tags" style="margin-right:7px"></i>管理分类…</button>',
+        '<div class="om-setting-row" style="gap:7px">',
+        '<button class="om-btn om-btn-outline" id="om-open-cats" style="width:100%;text-align:left"><i class="fa-solid fa-tags" style="margin-right:7px"></i>穿搭分类管理…</button>',
+        '<button class="om-btn om-btn-outline" id="om-open-acc-cats" style="width:100%;text-align:left"><i class="fa-solid fa-gem" style="margin-right:7px"></i>单品分类管理…</button>',
+        '</div>',
 
         '<div class="om-divider"></div>',
         '<div class="om-sec-title">数据</div>',
@@ -1021,7 +1029,10 @@ function openSettingsSheet() {
         closeSheet(sheet); fn.renderCatbar(); fn.renderGrid(); fn.renderBottomStatus(); fn.updateBtn(); toast('已清空');
     });
     sheet.querySelector('#om-open-cats').addEventListener('click', function () {
-        closeSheet(sheet); openCatsSheet();
+        closeSheet(sheet); openCatsSheet(false);
+    });
+    sheet.querySelector('#om-open-acc-cats').addEventListener('click', function () {
+        closeSheet(sheet); openCatsSheet(true);
     });
 }
 
@@ -1066,7 +1077,7 @@ function openCatsSheet(isAcc) {
         catNames = getCatNames(cats);
         viewOutfits = data.items;
         if (isAcc) {
-            viewLabel = '配饰';
+            viewLabel = '单品';
         } else {
             var d = data.raw;
             viewLabel = d.currentView === 'char' && d.currentChar ? (d.currentChar === SHARED_CHAR_KEY ? SHARED_CHAR_LABEL : d.currentChar) + '的' : 'User的';
@@ -1315,6 +1326,8 @@ function openAccContextMenu(acc) {
         '<div class="om-ctx-outfit-name"><i class="fa-solid fa-gem" style="margin-right:6px;opacity:.5;"></i>' + esc(acc.name) + '</div>',
         '<div class="om-ctx-item" id="om-accctx-edit"><i class="fa-solid fa-pen"></i>编辑</div>',
         acc.imageData ? '<div class="om-ctx-item" id="om-accctx-view"><i class="fa-solid fa-expand"></i>查看大图</div>' : '',
+        acc.imageData ? '<div class="om-ctx-item" id="om-accctx-aidesc"><i class="fa-solid fa-wand-magic-sparkles"></i>AI 生成描述</div>' : '',
+        '<div class="om-ctx-item" id="om-accctx-move"><i class="fa-solid fa-arrow-right-arrow-left"></i>移动 / 复制</div>',
         '<div class="om-ctx-item danger" id="om-accctx-del"><i class="fa-solid fa-trash"></i>删除</div>',
     ].join(''));
 
@@ -1328,6 +1341,35 @@ function openAccContextMenu(acc) {
     if (viewEl) viewEl.addEventListener('click', function () {
         closeSheet(sheet);
         openLightbox([acc], acc.id);
+    });
+
+    var aiEl = sheet.querySelector('#om-accctx-aidesc');
+    if (aiEl) aiEl.addEventListener('click', function () {
+        closeSheet(sheet);
+        toast('正在生成配饰描述...');
+        generateSingleAccDescription(acc, function (err, result) {
+            if (err) { toast('生成失败：' + err, true); return; }
+            var curP = loadCurrent();
+            var target = partGetAccById(curP, acc.id);
+            if (!target) { toast('未找到配饰数据', true); return; }
+            if (result.description) target.description = result.description;
+            if (result.name && (!target.name || !target.name.trim())) target.name = result.name;
+            saveCurrent(curP);
+            fn.renderGrid();
+            toast('✨ 描述已生成');
+        });
+    });
+
+    var moveEl = sheet.querySelector('#om-accctx-move');
+    if (moveEl) moveEl.addEventListener('click', function () {
+        closeSheet(sheet);
+        if (fn.openAccMoveToPanel) {
+            fn.openAccMoveToPanel([acc.id], function () {
+                fn.renderAccCatbar();
+                fn.renderGrid();
+                fn.renderBottomStatus();
+            });
+        }
     });
 
     var delEl = sheet.querySelector('#om-accctx-del');

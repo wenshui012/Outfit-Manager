@@ -2,7 +2,7 @@
 // 批量标签、批量导入、批量AI生成、数据导出导入
 
 import { load, save, loadMeta, loadCurrent, saveCurrent, loadPartition, savePartition, currentPartKey, currentUserPartKey, syncActivePartitions, isServerMode, batchResolveImages, uploadImage, getImageUrlPrefix } from './db.js';
-import { getCharData, getViewOutfits, getViewCategories, getById, getCatNames, getSubCats, partGetById, partGetAccById, SHARED_CHAR_KEY, SHARED_CHAR_LABEL } from './data.js';
+import { getCharData, getViewOutfits, getViewCategories, getById, getCatNames, getSubCats, partGetById, partGetAccById, cleanAccIdFromKits, SHARED_CHAR_KEY, SHARED_CHAR_LABEL } from './data.js';
 import { genId, esc, toast, getPopupLayer, compressImage } from './utils.js';
 import { batchGenerateDescriptions, batchGenerateAccDescriptions } from './api.js';
 import { state, fn } from './bridge.js';
@@ -1218,8 +1218,157 @@ function executeMove(selectedIds, targetType, targetChar, presetIdx, targetCat, 
     if (onDone) onDone();
 }
 
+// ── 配饰移动 / 复制 ──────────────────────────────────────
+function openAccMoveToPanel(accIds, onDone) {
+    accIds = (accIds || []).slice();
+    if (accIds.length === 0) { toast('请先选择配饰', true); return; }
+    var sourcePartKey = currentPartKey();
+    var sourcePart = loadPartition(sourcePartKey);
+    var sourceAccs = accIds.map(function (id) { return partGetAccById(sourcePart, id); }).filter(function (a) { return !!a; });
+    if (sourceAccs.length === 0) { toast('未找到配饰', true); return; }
+
+    var meta = loadMeta();
+    var isCopy = false;
+    var currentLabel = sourcePartKey.indexOf('user:') === 0 ? 'User' : '角色衣柜';
+
+    var html = '<div class="om-sheet-title"><i class="fa-solid fa-arrow-right-arrow-left"></i>移动 / 复制单品</div>';
+    html += '<div class="om-hint" style="margin-bottom:10px">' + sourceAccs.length + ' 件单品 · 来自：' + esc(currentLabel) + '</div>';
+    html += '<div class="om-move-toggle">' +
+        '<button class="om-move-toggle-btn on" data-mode="move"><i class="fa-solid fa-arrow-right-arrow-left"></i> 移动</button>' +
+        '<button class="om-move-toggle-btn" data-mode="copy"><i class="fa-regular fa-copy"></i> 复制</button></div>';
+    html += '<div class="om-divider" style="margin:10px 0"></div>';
+    html += '<div class="om-cat-item om-acc-move-target" data-pk="user:__default__" data-label="User 默认衣柜" style="cursor:pointer;padding:14px"><i class="fa-solid fa-user" style="opacity:.45;width:22px;text-align:center;margin-right:8px"></i><span class="om-cat-name" style="font-weight:600;font-size:1em">User 默认衣柜</span></div>';
+    (meta.presets || []).forEach(function (p) {
+        if (!p || !p.partKey) return;
+        html += '<div class="om-cat-item om-acc-move-target" data-pk="' + esc(p.partKey) + '" data-label="' + esc(p.name || '预设') + '" style="cursor:pointer;padding:14px"><i class="fa-solid fa-bookmark" style="opacity:.45;width:22px;text-align:center;margin-right:8px"></i><span class="om-cat-name" style="font-weight:600;font-size:1em">' + esc(p.name || '预设') + '</span></div>';
+    });
+    html += '<div class="om-divider" style="margin:10px 0"></div>';
+    (meta.charIndex || []).forEach(function (ci) {
+        if (!ci || !ci.partKey) return;
+        var label = ci.id === SHARED_CHAR_KEY ? SHARED_CHAR_LABEL : ci.name;
+        var icon = ci.id === SHARED_CHAR_KEY ? 'fa-globe' : 'fa-masks-theater';
+        html += '<div class="om-cat-item om-acc-move-target" data-pk="' + esc(ci.partKey) + '" data-label="' + esc(label) + '" style="cursor:pointer;padding:14px"><i class="fa-solid ' + icon + '" style="opacity:.45;width:22px;text-align:center;margin-right:8px"></i><span class="om-cat-name" style="font-weight:600;font-size:1em">' + esc(label) + '</span></div>';
+    });
+
+    var sheet = createSheet(html);
+    sheet.querySelectorAll('.om-move-toggle-btn').forEach(function (btn) {
+        btn.addEventListener('click', function () {
+            isCopy = btn.dataset.mode === 'copy';
+            sheet.querySelectorAll('.om-move-toggle-btn').forEach(function (b) { b.classList.toggle('on', b === btn); });
+        });
+    });
+    sheet.querySelectorAll('.om-acc-move-target').forEach(function (row) {
+        row.addEventListener('click', function () {
+            closeSheet(sheet);
+            openAccMoveCategorySheet(sourceAccs, sourcePartKey, row.dataset.pk, row.dataset.label || '目标衣柜', isCopy, onDone);
+        });
+    });
+}
+
+function openAccMoveCategorySheet(sourceAccs, sourcePartKey, targetPartKey, targetLabel, isCopy, onDone) {
+    var targetPart = loadPartition(targetPartKey);
+    if (!Array.isArray(targetPart.accCategories)) targetPart.accCategories = [];
+    var exp = {};
+    var actionWord = isCopy ? '复制' : '移动';
+
+    function buildCatTree(cats, indent) {
+        var h = '';
+        h += '<div class="om-acc-leaf" data-cat="" data-sub="" style="padding-left:' + indent + 'px;opacity:.55">不设分类</div>';
+        (cats || []).forEach(function (catObj) {
+            var catName = typeof catObj === 'object' ? catObj.name : catObj;
+            var children = typeof catObj === 'object' ? (catObj.children || []) : [];
+            if (children.length > 0) {
+                var isOpen = exp['cat_' + catName];
+                h += '<div class="om-acc-row om-acc-cat-toggle" data-key="cat_' + esc(catName) + '" style="padding-left:' + (indent - 4) + 'px"><i class="fa-solid fa-chevron-right om-acc-arrow' + (isOpen ? ' open' : '') + '"></i><span style="font-weight:600">' + esc(catName) + '</span></div>';
+                if (isOpen) {
+                    h += '<div class="om-acc-leaf" data-cat="' + esc(catName) + '" data-sub="" style="padding-left:' + (indent + 16) + 'px">全部' + esc(catName) + '</div>';
+                    children.forEach(function (sc) {
+                        h += '<div class="om-acc-leaf" data-cat="' + esc(catName) + '" data-sub="' + esc(sc) + '" style="padding-left:' + (indent + 16) + 'px"><i class="fa-solid fa-turn-up fa-rotate-90" style="font-size:.55em;opacity:.25;margin-right:5px"></i>' + esc(sc) + '</div>';
+                    });
+                }
+            } else {
+                h += '<div class="om-acc-leaf" data-cat="' + esc(catName) + '" data-sub="" style="padding-left:' + indent + 'px">' + esc(catName) + '</div>';
+            }
+        });
+        return h;
+    }
+
+    function refresh() {
+        var body = sheet.querySelector('.om-acc-body');
+        if (body) body.innerHTML = buildCatTree(targetPart.accCategories || [], 16);
+        bindEvents();
+    }
+
+    function bindEvents() {
+        sheet.querySelectorAll('.om-acc-cat-toggle').forEach(function (row) {
+            row.addEventListener('click', function () { exp[row.dataset.key] = !exp[row.dataset.key]; refresh(); });
+        });
+        sheet.querySelectorAll('.om-acc-leaf').forEach(function (leaf) {
+            leaf.addEventListener('click', function () {
+                executeAccMove(sourceAccs, sourcePartKey, targetPartKey, leaf.dataset.cat || '', leaf.dataset.sub || '', isCopy, onDone);
+                closeSheet(sheet);
+            });
+        });
+    }
+
+    var sheet = createSheet(
+        '<div class="om-sheet-title"><i class="fa-solid fa-gem"></i>' + actionWord + '到「' + esc(targetLabel) + '」</div>' +
+        '<div class="om-hint" style="margin-bottom:8px">' + sourceAccs.length + ' 件单品</div>' +
+        '<div class="om-acc-body">' + buildCatTree(targetPart.accCategories || [], 16) + '</div>'
+    );
+    bindEvents();
+}
+
+function executeAccMove(sourceAccs, sourcePartKey, targetPartKey, targetCat, targetSub, isCopy, onDone) {
+    var count = sourceAccs.length;
+    var samePartition = sourcePartKey === targetPartKey;
+
+    if (samePartition && !isCopy) {
+        var samePart = loadPartition(sourcePartKey);
+        sourceAccs.forEach(function (src) {
+            var acc = partGetAccById(samePart, src.id);
+            if (acc) {
+                acc.category = targetCat;
+                acc.subCategory = targetSub || '';
+            }
+        });
+        savePartition(sourcePartKey, samePart);
+        toast('已更新 ' + count + ' 件单品分类');
+        if (onDone) onDone();
+        return;
+    }
+
+    var targetPart = loadPartition(targetPartKey);
+    if (!Array.isArray(targetPart.accessories)) targetPart.accessories = [];
+    var usedIds = {};
+    targetPart.accessories.forEach(function (acc) { if (acc && acc.id) usedIds[acc.id] = true; });
+    sourceAccs.forEach(function (src) {
+        var copy = JSON.parse(JSON.stringify(src));
+        do { copy.id = 'a_' + genId().substring(0, 8); } while (usedIds[copy.id]);
+        usedIds[copy.id] = true;
+        copy.category = targetCat;
+        copy.subCategory = targetSub || '';
+        targetPart.accessories.push(copy);
+    });
+    savePartition(targetPartKey, targetPart);
+
+    if (!isCopy) {
+        var sourcePart = loadPartition(sourcePartKey);
+        var sourceIds = sourceAccs.map(function (a) { return a.id; });
+        sourcePart.accessories = (sourcePart.accessories || []).filter(function (a) { return sourceIds.indexOf(a.id) === -1; });
+        sourceIds.forEach(function (id) { cleanAccIdFromKits(sourcePart, id); });
+        if (state.kitFocusPartKey === sourcePartKey) {
+            state.kitDraftAccIds = (state.kitDraftAccIds || []).filter(function (id) { return sourceIds.indexOf(id) === -1; });
+        }
+        savePartition(sourcePartKey, sourcePart);
+    }
+
+    toast((isCopy ? '已复制 ' : '已移动 ') + count + ' 件单品');
+    if (onDone) onDone();
+}
+
 // ── 导出 ──────────────────────────────────────────────────
-export { openBatchDescModal, openAccBatchDescModal, openBatchTagPanel, openBatchImportModal, openMoveToPanel };
+export { openBatchDescModal, openAccBatchDescModal, openBatchTagPanel, openBatchImportModal, openMoveToPanel, openAccMoveToPanel };
 export { exportData, importData, processImport };
 
 export function registerBatchFn() {
@@ -1228,6 +1377,7 @@ export function registerBatchFn() {
     fn.openBatchTagPanel = openBatchTagPanel;
     fn.openBatchImportModal = openBatchImportModal;
     fn.openMoveToPanel = openMoveToPanel;
+    fn.openAccMoveToPanel = openAccMoveToPanel;
     fn.exportData = exportData;
     fn.importData = importData;
 }
