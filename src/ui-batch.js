@@ -2,9 +2,9 @@
 // 批量标签、批量导入、批量AI生成、数据导出导入
 
 import { load, save, loadMeta, loadCurrent, saveCurrent, loadPartition, savePartition, currentPartKey, currentUserPartKey, syncActivePartitions, isServerMode, batchResolveImages, uploadImage, getImageUrlPrefix } from './db.js';
-import { getCharData, getViewOutfits, getViewCategories, getById, getCatNames, getSubCats, partGetById, SHARED_CHAR_KEY, SHARED_CHAR_LABEL } from './data.js';
+import { getCharData, getViewOutfits, getViewCategories, getById, getCatNames, getSubCats, partGetById, partGetAccById, SHARED_CHAR_KEY, SHARED_CHAR_LABEL } from './data.js';
 import { genId, esc, toast, getPopupLayer, compressImage } from './utils.js';
-import { batchGenerateDescriptions } from './api.js';
+import { batchGenerateDescriptions, batchGenerateAccDescriptions } from './api.js';
 import { state, fn } from './bridge.js';
 
 // 需要从 ui-sheets.js 引入的通用函数
@@ -844,6 +844,111 @@ function openBatchDescModal(ids) {
     });
 }
 
+// ── 配饰批量 AI 生成描述弹窗 ─────────────────────────────
+function openAccBatchDescModal(ids) {
+    var meta = loadMeta();
+    var curP = loadCurrent();
+    var withImg = ids.filter(function (id) { var a = partGetAccById(curP, id); return a && a.imageData; });
+    var skipCount = ids.length - withImg.length;
+    var willSkipDesc = withImg.filter(function (id) { var a = partGetAccById(curP, id); return a && a.description && a.description.trim() && !meta.apiVision.overwrite; }).length;
+    var modal = document.createElement('div');
+    modal.className = 'om-modal';
+    modal.style.setProperty('z-index', '2147483647', 'important');
+    modal.innerHTML = '<div class="om-modal-box" style="background:' + (state.darkMode ? '#1e1e24' : '#ececef') + ';color:' + (state.darkMode ? '#eee' : '#111') + '">' +
+        '<div class="om-modal-title"><i class="fa-solid fa-wand-magic-sparkles" style="margin-right:6px;color:var(--SmartThemeQuoteColor,#7c6daf)"></i>AI 批量生成配饰描述</div>' +
+        '<div style="font-size:.82em;opacity:.7;margin-bottom:8px">' +
+        '共选中 ' + ids.length + ' 个配饰，其中 ' + withImg.length + ' 个有图片' +
+        (skipCount > 0 ? '，' + skipCount + ' 个无图片将跳过' : '') +
+        (willSkipDesc > 0 ? '<br>' + willSkipDesc + ' 个已有描述将跳过（可在设置中开启覆盖）' : '') +
+        '</div>' +
+        '<div style="font-size:.78em;opacity:.5;margin-bottom:8px">共需 ' + (withImg.length - willSkipDesc) + ' 次 API 调用</div>' +
+        '<div style="border:1px solid rgba(127,127,127,.12);border-radius:8px;padding:10px;margin-bottom:8px">' +
+        '<label style="display:flex;align-items:center;gap:6px;font-size:.82em;cursor:pointer"><input type="checkbox" id="om-acc-batch-autoname" checked /> 同时生成配饰名称（覆盖现有名称）</label>' +
+        '</div>' +
+        '<div id="om-acc-batch-progress" style="display:none;margin:10px 0">' +
+        '<div style="font-size:.82em;margin-bottom:6px" id="om-acc-batch-prog-text">准备中...</div>' +
+        '<div style="height:6px;background:rgba(127,127,127,.15);border-radius:3px;overflow:hidden">' +
+        '<div id="om-acc-batch-prog-bar" style="height:100%;width:0%;background:var(--SmartThemeQuoteColor,#7c6daf);border-radius:3px;transition:width .3s"></div></div></div>' +
+        '<div id="om-acc-batch-result" style="display:none;margin:8px 0;font-size:.82em;max-height:120px;overflow-y:auto"></div>' +
+        '<div class="om-btn-row" style="margin-top:10px" id="om-acc-batch-actions">' +
+        '<button class="om-btn om-btn-safe" id="om-acc-batch-start"><i class="fa-solid fa-play"></i> 开始生成</button>' +
+        '<button class="om-btn om-btn-outline" id="om-acc-batch-close">取消</button></div></div>';
+
+    var _mp = getPopupLayer();
+    modal.style.cssText = 'position:absolute !important;inset:0 !important;z-index:1 !important;background:rgba(0,0,0,.45) !important;display:flex !important;align-items:center !important;justify-content:center !important;padding:20px !important;box-sizing:border-box !important;pointer-events:auto !important;';
+    _mp.appendChild(modal);
+
+    var modalAlive = true;
+    function removeModal() { if (modalAlive && modal.parentNode) { modal.parentNode.removeChild(modal); modalAlive = false; } }
+
+    modal.addEventListener('click', function (e) { if (e.target === modal) removeModal(); });
+    modal.querySelector('#om-acc-batch-close').addEventListener('click', function () { removeModal(); });
+
+    modal.querySelector('#om-acc-batch-start').addEventListener('click', function () {
+        modal.querySelector('#om-acc-batch-progress').style.display = 'block';
+        modal.querySelector('#om-acc-batch-start').disabled = true;
+        modal.querySelector('#om-acc-batch-start').textContent = '生成中...';
+        var closeBtn = modal.querySelector('#om-acc-batch-close');
+        closeBtn.textContent = '后台运行';
+        closeBtn.onclick = function () {
+            removeModal();
+            toast('AI 正在生成配饰描述，可继续使用酒馆，完成后会通知');
+        };
+
+        var options = {
+            autoName: modal.querySelector('#om-acc-batch-autoname').checked
+        };
+
+        batchGenerateAccDescriptions(ids, options,
+            function (done, total, msg) {
+                var pct = total > 0 ? Math.round(done / total * 100) : 0;
+                if (modalAlive) {
+                    var bar = modal.querySelector('#om-acc-batch-prog-bar');
+                    var txt = modal.querySelector('#om-acc-batch-prog-text');
+                    if (bar) bar.style.width = pct + '%';
+                    if (txt) txt.textContent = done + '/' + total + ' ' + msg;
+                }
+            },
+            function (err, doneCount, errors) {
+                var successCount = (doneCount || 0) - (errors ? errors.length : 0);
+                var failCount = errors ? errors.length : 0;
+
+                if (modalAlive) {
+                    var bar = modal.querySelector('#om-acc-batch-prog-bar');
+                    if (bar) bar.style.width = '100%';
+                    var resultEl = modal.querySelector('#om-acc-batch-result');
+                    resultEl.style.display = 'block';
+                    if (err && !doneCount) {
+                        resultEl.innerHTML = '<div style="color:#e57373"><i class="fa-solid fa-circle-exclamation"></i> ' + esc(err) + '</div>';
+                    } else {
+                        var html2 = '<div style="color:#4caf50;font-weight:600">成功生成 ' + successCount + ' 条</div>';
+                        if (failCount > 0) {
+                            html2 += '<div style="color:#ff8c42;margin-top:4px">' + failCount + ' 个失败：</div>';
+                            errors.forEach(function (e) {
+                                html2 += '<div style="opacity:.6;font-size:.9em;margin-left:8px">· ' + esc(e.name) + '：' + esc(e.error) + '</div>';
+                            });
+                        }
+                        resultEl.innerHTML = html2;
+                    }
+                    var actionsEl = modal.querySelector('#om-acc-batch-actions');
+                    actionsEl.innerHTML = '<button class="om-btn om-btn-safe" id="om-acc-batch-done">完成</button>';
+                    modal.querySelector('#om-acc-batch-done').addEventListener('click', function () {
+                        removeModal();
+                        fn.renderGrid();
+                    });
+                } else {
+                    if (failCount > 0) {
+                        toast('AI 配饰描述生成完成：' + successCount + ' 成功，' + failCount + ' 失败');
+                    } else {
+                        toast('AI 配饰描述生成完成：' + successCount + ' 条描述已就绪');
+                    }
+                    fn.renderGrid();
+                }
+            }
+        );
+    });
+}
+
 // ── 移动到… 面板 ─────────────────────────────────────────
 // selectedIds: 要移动的 outfit id 数组
 // onDone: 完成后回调
@@ -1114,11 +1219,12 @@ function executeMove(selectedIds, targetType, targetChar, presetIdx, targetCat, 
 }
 
 // ── 导出 ──────────────────────────────────────────────────
-export { openBatchDescModal, openBatchTagPanel, openBatchImportModal, openMoveToPanel };
+export { openBatchDescModal, openAccBatchDescModal, openBatchTagPanel, openBatchImportModal, openMoveToPanel };
 export { exportData, importData, processImport };
 
 export function registerBatchFn() {
     fn.openBatchDescModal = openBatchDescModal;
+    fn.openAccBatchDescModal = openAccBatchDescModal;
     fn.openBatchTagPanel = openBatchTagPanel;
     fn.openBatchImportModal = openBatchImportModal;
     fn.openMoveToPanel = openMoveToPanel;

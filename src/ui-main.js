@@ -17,7 +17,7 @@ import {
 import {
     getCatNames, getSubCats, hasSubCats,
     partGetById, partIsActive, partGetAccById,
-    getActiveKit, getKitAccessories, ensureOutfitKits,
+    getActiveKit, getKitAccessories, ensureOutfitKits, cleanAccIdFromKits,
     SHARED_CHAR_KEY, SHARED_CHAR_LABEL
 } from './data.js';
 import { genId, esc, toast, getPopupLayer } from './utils.js';
@@ -208,6 +208,49 @@ function toggleDisabledAcc(partKey, outfitId, accId) {
     refreshDetailPanel();
 }
 
+function filterActiveForCurrentMode() {
+    return state.accMode ? (state.filterNoCat || state.filterNoDesc) : (state.filterNoCat || state.filterNoTag || state.filterNoDesc);
+}
+
+function updateSearchPlaceholder() {
+    var inp = document.getElementById('om-search-inp');
+    if (inp) inp.placeholder = state.accMode ? '搜索配饰…' : '搜索穿搭…';
+}
+
+function updateFilterBarForMode() {
+    var tagChip = document.getElementById('om-filter-notag');
+    if (tagChip) tagChip.style.display = state.accMode ? 'none' : '';
+    var fbtn = document.getElementById('om-filter-toggle');
+    if (fbtn) fbtn.classList.toggle('om-filter-active', filterActiveForCurrentMode());
+}
+
+function updateBatchButtonState() {
+    var btn = document.getElementById('om-batch-toggle');
+    if (btn) btn.classList.toggle('on', state.batchMode);
+}
+
+function batchDeleteAccessories(accIds) {
+    accIds = uniqueIds(accIds || []);
+    if (accIds.length === 0) { toast('请先选择配饰', true); return; }
+    if (!confirm('确定删除 ' + accIds.length + ' 个配饰？引用它们的套装方案将自动更新。')) return;
+    var part = loadCurrent();
+    part.accessories = (part.accessories || []).filter(function (acc) {
+        return accIds.indexOf(acc.id) === -1;
+    });
+    accIds.forEach(function (id) { cleanAccIdFromKits(part, id); });
+    if (state.kitFocusPartKey === currentPartKey()) {
+        state.kitDraftAccIds = (state.kitDraftAccIds || []).filter(function (id) { return accIds.indexOf(id) === -1; });
+    }
+    saveCurrent(part);
+    state.batchSelected = [];
+    state.batchMode = false;
+    updateBatchButtonState();
+    fn.renderAccCatbar();
+    renderGrid();
+    renderBottomStatus();
+    toast('已删除 ' + accIds.length + ' 个配饰');
+}
+
 function setupGridLazyImages(area) {
     if (gridImageObserver) { gridImageObserver.disconnect(); gridImageObserver = null; }
 
@@ -352,22 +395,22 @@ function openPopup() {
         renderGrid();
     });
     var sinp = ov.querySelector('#om-search-inp');
+    updateSearchPlaceholder();
     sinp.addEventListener('input', function () { state.searchQuery = sinp.value; renderGrid(); });
     sinp.addEventListener('keydown', function (e) { if (e.key === 'Escape') { state.searchOpen = false; state.searchQuery = ''; ov.querySelector('#om-search-bar').classList.remove('open'); renderGrid(); } });
     // 筛选
     ov.querySelector('#om-filter-toggle').addEventListener('click', function () {
         state.filterOpen = !state.filterOpen;
         var fbar = document.getElementById('om-filter-bar');
+        updateFilterBarForMode();
         fbar.classList.toggle('open', state.filterOpen);
-        var fbtn = ov.querySelector('#om-filter-toggle');
-        fbtn.classList.toggle('om-filter-active', state.filterNoCat || state.filterNoTag || state.filterNoDesc);
     });
     function bindFilterChip(id, key) {
         ov.querySelector(id).addEventListener('click', function () {
+            if (state.accMode && key === 'filterNoTag') return;
             state[key] = !state[key];
             this.classList.toggle('on', state[key]);
-            var fbtn = ov.querySelector('#om-filter-toggle');
-            fbtn.classList.toggle('om-filter-active', state.filterNoCat || state.filterNoTag || state.filterNoDesc);
+            updateFilterBarForMode();
             renderGrid();
         });
     }
@@ -379,7 +422,7 @@ function openPopup() {
     ov.querySelector('#om-bottom-status').addEventListener('click', function () { toggleDetailPanel(); });
     ov.querySelector('#om-batch-toggle').addEventListener('click', function () {
         state.batchMode = !state.batchMode; state.batchSelected = [];
-        ov.querySelector('#om-batch-toggle').classList.toggle('on', state.batchMode);
+        updateBatchButtonState();
         renderGrid();
     });
     ov.querySelector('#om-bottom-presets').addEventListener('click', function () { fn.openPresetsSheet(); });
@@ -388,8 +431,13 @@ function openPopup() {
     // 配饰栏展开/折叠
     ov.querySelector('#om-acc-toggle').addEventListener('click', function () {
         state.accMode = !state.accMode;
+        state.batchMode = false;
+        state.batchSelected = [];
         if (state.accMode) ensureKitFocusForAccMode(false);
         else clearKitDraft();
+        updateBatchButtonState();
+        updateSearchPlaceholder();
+        updateFilterBarForMode();
         var btn = ov.querySelector('#om-acc-toggle');
         if (btn) {
             btn.classList.toggle('open', state.accMode);
@@ -781,8 +829,13 @@ function renderAccCatbar() {
             html += '<button class="om-catbtn' + (state.accCat === c ? ' on' : '') + '" data-ac="' + esc(c) + '">' + esc(c) + '</button>';
         });
     }
+    html += '<button class="om-catbtn om-acc-manage-btn" id="om-acc-cats-manage" title="管理配饰分类"><i class="fa-solid fa-tags"></i></button>';
 
     accbar.innerHTML = html;
+    var manageBtn = accbar.querySelector('#om-acc-cats-manage');
+    if (manageBtn) manageBtn.addEventListener('click', function () {
+        fn.openCatsSheet(true);
+    });
 
     // 事件绑定
     if (state.accDrillParent) {
@@ -1181,17 +1234,49 @@ function renderAccGrid(area, part) {
                 (a.description && a.description.toLowerCase().indexOf(q) !== -1);
         });
     }
+    if (state.filterNoCat) {
+        list = list.filter(function (a) { return !a.category || !a.category.trim(); });
+    }
+    if (state.filterNoDesc) {
+        list = list.filter(function (a) { return !a.description || !a.description.trim(); });
+    }
+
+    var batchArea = document.getElementById('om-batch-area');
+    if (batchArea) {
+        if (state.batchMode) {
+            batchArea.style.display = '';
+            batchArea.innerHTML = '<div class="om-batch-bar">' +
+                '<span class="om-batch-info">已选&nbsp;<b id="om-batch-count">' + state.batchSelected.length + '</b>&nbsp;个</span>' +
+                '<div class="om-batch-divider" style="width:1px;height:16px;background:rgba(127,127,127,.25);flex-shrink:0;margin:0 2px;"></div>' +
+                '<div class="om-batch-acts">' +
+                '<button class="om-batch-btn" id="om-acc-batch-selall">全选</button>' +
+                '<button class="om-batch-btn" id="om-acc-batch-invert">反选</button>' +
+                '<button class="om-batch-btn" id="om-acc-batch-desc"><i class="fa-solid fa-wand-magic-sparkles"></i> AI描述</button>' +
+                '<button class="om-batch-btn danger" id="om-acc-batch-del"><i class="fa-solid fa-trash"></i> 删除</button>' +
+                '</div></div>';
+        } else {
+            batchArea.style.display = 'none';
+            batchArea.innerHTML = '';
+        }
+    }
 
     var html = '<div class="om-grid">';
-    html += '<div class="om-add-card" id="om-acc-addcard"><i class="fa-solid fa-plus"></i><span>添加配饰</span></div>';
+    if (!state.batchMode) {
+        html += '<div class="om-add-card" id="om-acc-addcard"><i class="fa-solid fa-plus"></i><span>添加配饰</span></div>';
+    }
 
     if (list.length === 0) {
-        var emptyMsg = state.searchQuery ? '没有匹配的配饰' : (state.accCat !== '__all__' ? '该分类暂无配饰' : '还没有配饰，点击添加');
+        var hasFilter = state.filterNoCat || state.filterNoDesc;
+        var emptyMsg = state.searchQuery ? '没有匹配的配饰'
+            : hasFilter ? '没有符合筛选条件的配饰'
+            : (state.accCat !== '__all__' ? '该分类暂无配饰' : '还没有配饰，点击添加');
         html += '</div><div class="om-empty"><i class="fa-solid fa-gem"></i><span>' + emptyMsg + '</span></div>';
     } else {
         list.forEach(function (a) {
             var imgContent = '';
-            var selected = draftHasAcc(a.id);
+            var selected = !state.batchMode && draftHasAcc(a.id);
+            var bsel = state.batchSelected.indexOf(a.id) !== -1;
+            var checkBox = state.batchMode ? '<div class="om-card-check' + (bsel ? ' checked' : '') + '" data-acc-id="' + esc(a.id) + '"><i class="fa-solid fa-check"></i></div>' : '';
             if (a.imageData) {
                 imgContent = '<img class="om-lazy-img" src="' + OM_TRANSPARENT_PIXEL + '" data-acc-id="' + esc(a.id) + '" alt="' + esc(a.name) + '" loading="lazy" decoding="async" />';
             } else {
@@ -1202,11 +1287,12 @@ function renderAccGrid(area, part) {
                     '<i class="fa-solid fa-gem om-noimg-icon"></i>' +
                     '</div>';
             }
-            html += '<div class="om-card' + (a.imageData ? '' : ' no-img') + (selected ? ' kit-selected' : '') + ' om-acc-card" data-acc-id="' + a.id + '">' +
+            var menuBtn = state.batchMode ? '' : '<button class="om-card-menu" data-acc-id="' + esc(a.id) + '" title="操作"><i class="fa-solid fa-ellipsis-vertical"></i></button>';
+            html += '<div class="om-card' + (a.imageData ? '' : ' no-img') + (selected ? ' kit-selected' : '') + (bsel ? ' batch-sel' : '') + ' om-acc-card" data-acc-id="' + esc(a.id) + '">' +
                 '<div class="om-card-img">' +
-                imgContent +
+                checkBox + imgContent +
                 (selected ? '<div class="om-badge-on om-kit-badge"><i class="fa-solid fa-check"></i></div>' : '') +
-                '<button class="om-card-menu" data-acc-id="' + a.id + '" title="操作"><i class="fa-solid fa-ellipsis-vertical"></i></button>' +
+                menuBtn +
                 '</div>' +
                 '<div class="om-card-info">' +
                 '<div class="om-card-name">' + esc(a.name) + '</div>' +
@@ -1221,6 +1307,36 @@ function renderAccGrid(area, part) {
     // 配饰懒加载
     setupAccLazyImages(area);
 
+    if (state.batchMode && batchArea) {
+        var selall = batchArea.querySelector('#om-acc-batch-selall');
+        var invert = batchArea.querySelector('#om-acc-batch-invert');
+        var delBtn = batchArea.querySelector('#om-acc-batch-del');
+        var descBtn = batchArea.querySelector('#om-acc-batch-desc');
+        if (selall) selall.addEventListener('click', function () {
+            state.batchSelected = list.map(function (a) { return a.id; });
+            renderGrid();
+        });
+        if (invert) invert.addEventListener('click', function () {
+            var visibleIds = list.map(function (a) { return a.id; });
+            state.batchSelected = visibleIds.filter(function (id) { return state.batchSelected.indexOf(id) === -1; });
+            renderGrid();
+        });
+        if (delBtn) delBtn.addEventListener('click', function () {
+            batchDeleteAccessories(state.batchSelected.slice());
+        });
+        if (descBtn) descBtn.addEventListener('click', function () {
+            if (state.batchSelected.length === 0) { toast('请先选择配饰', true); return; }
+            var m = loadMeta();
+            if (!m.apiVision.endpoint || !m.apiVision.key || !m.apiVision.model) {
+                toast('请先在设置中配置"描述生成 API"', true); return;
+            }
+            var curP = loadCurrent();
+            var hasImg = state.batchSelected.some(function (id) { var acc = partGetAccById(curP, id); return acc && acc.imageData; });
+            if (!hasImg) { toast('所选配饰中没有带图片的', true); return; }
+            if (fn.openAccBatchDescModal) fn.openAccBatchDescModal(state.batchSelected.slice());
+        });
+    }
+
     // 添加配饰
     var ac = area.querySelector('#om-acc-addcard');
     if (ac) ac.addEventListener('click', function () {
@@ -1233,7 +1349,30 @@ function renderAccGrid(area, part) {
         card.addEventListener('click', function (e) {
             if (e.target.closest('.om-card-menu')) return;
             var accId = card.dataset.accId;
+            if (state.batchMode) {
+                var idx = state.batchSelected.indexOf(accId);
+                if (idx !== -1) state.batchSelected.splice(idx, 1); else state.batchSelected.push(accId);
+                var chk = card.querySelector('.om-card-check');
+                if (chk) chk.classList.toggle('checked', state.batchSelected.indexOf(accId) !== -1);
+                card.classList.toggle('batch-sel', state.batchSelected.indexOf(accId) !== -1);
+                var cnt = document.getElementById('om-batch-count');
+                if (cnt) cnt.textContent = state.batchSelected.length;
+                return;
+            }
             toggleDraftAcc(accId);
+        });
+    });
+    area.querySelectorAll('.om-card-check[data-acc-id]').forEach(function (chk) {
+        chk.addEventListener('click', function (e) {
+            e.stopPropagation();
+            var accId = chk.dataset.accId;
+            var idx = state.batchSelected.indexOf(accId);
+            if (idx !== -1) state.batchSelected.splice(idx, 1); else state.batchSelected.push(accId);
+            chk.classList.toggle('checked', state.batchSelected.indexOf(accId) !== -1);
+            var card = chk.closest('.om-card');
+            if (card) card.classList.toggle('batch-sel', state.batchSelected.indexOf(accId) !== -1);
+            var cnt = document.getElementById('om-batch-count');
+            if (cnt) cnt.textContent = state.batchSelected.length;
         });
     });
 

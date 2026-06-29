@@ -49,6 +49,7 @@ export function defMeta() {
         apiVision: {
             endpoint: '', key: '', model: '',
             prompt: '用JSON回复（不要代码块）：{"name":"穿搭名称6字以内","description":"描述服装类型颜色材质款式搭配，只写服装不写人，100-200字"}',
+            accPrompt: '用JSON回复（不要代码块）：{"name":"配饰名称6字以内","description":"只描述图中的【{{accCategory}}】这一件单品，详细描述它的材质、颜色、款式、细节特征，不要描述其他服饰或整体穿搭，80-150字"}',
             overwrite: false
         }
     };
