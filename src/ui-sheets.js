@@ -1497,6 +1497,152 @@ function openAccContextMenu(acc) {
     });
 }
 
+// ── 单品批量导入弹窗 ─────────────────────────────────────
+function openAccBatchImportModal(files, defaultCat, defaultSubCat) {
+    files = (files || []).filter(function (f) { return f && f.type && f.type.indexOf('image') === 0; });
+    if (files.length === 0) { toast('未选择图片', true); return; }
+
+    var curP = loadCurrent();
+    var meta = loadMeta();
+    var cats = curP.accCategories || [];
+    var catNames = getCatNames(cats);
+    var catOpts = '<option value="">无分类</option>' +
+        catNames.map(function (c) { return '<option value="' + esc(c) + '"' + (c === defaultCat ? ' selected' : '') + '>' + esc(c) + '</option>'; }).join('');
+    var subCats = defaultCat ? getSubCats(cats, defaultCat) : [];
+    var subOpts = '<option value="">无子分类</option>' +
+        subCats.map(function (sc) { return '<option value="' + esc(sc) + '"' + (sc === defaultSubCat ? ' selected' : '') + '>' + esc(sc) + '</option>'; }).join('');
+    var hasApi = !!(meta.apiVision.endpoint && meta.apiVision.key && meta.apiVision.model);
+
+    var modal = document.createElement('div');
+    modal.className = 'om-modal';
+    modal.style.setProperty('z-index', '2147483647', 'important');
+    modal.innerHTML = '<div class="om-modal-box" style="background:' + (state.darkMode ? '#1e1e24' : '#ececef') + ';color:' + (state.darkMode ? '#eee' : '#111') + ';max-height:80vh">' +
+        '<div class="om-modal-title"><i class="fa-solid fa-images" style="margin-right:6px;color:var(--SmartThemeQuoteColor,#7c6daf)"></i>批量导入单品</div>' +
+        '<div style="font-size:.82em;opacity:.7;margin-bottom:8px">已选择 ' + files.length + ' 张图片，将自动压缩</div>' +
+        '<div style="display:flex;gap:6px;flex-wrap:wrap;max-height:120px;overflow-y:auto;margin-bottom:10px" id="om-acc-bimport-preview"></div>' +
+        '<div class="om-field" style="margin-bottom:8px"><label style="font-size:.82em;font-weight:600">导入到分类</label><select id="om-acc-bimport-cat" style="background:rgba(127,127,127,.08);border:1px solid rgba(127,127,127,.2);border-radius:8px;color:inherit;padding:7px 10px;font-size:.85em;width:100%;box-sizing:border-box;font-family:inherit">' + catOpts + '</select></div>' +
+        '<div class="om-field" id="om-acc-bimport-sub-field" style="margin-bottom:8px;' + (defaultCat ? '' : 'display:none;') + '"><label style="font-size:.82em;font-weight:600">导入到子分类</label><select id="om-acc-bimport-sub" style="background:rgba(127,127,127,.08);border:1px solid rgba(127,127,127,.2);border-radius:8px;color:inherit;padding:7px 10px;font-size:.85em;width:100%;box-sizing:border-box;font-family:inherit">' + subOpts + '</select></div>' +
+        (hasApi ? '<label style="display:flex;align-items:center;gap:6px;font-size:.82em;cursor:pointer;margin-bottom:6px"><input type="checkbox" id="om-acc-bimport-ai" checked /> 导入后自动 AI 生成描述和名称</label>' : '<div style="font-size:.78em;opacity:.4;margin-bottom:6px">配置"描述生成 API"后可自动生成描述和名称</div>') +
+        '<div id="om-acc-bimport-hint" style="display:none;color:#e57373;font-size:.78em;margin-bottom:8px">请先选择单品分类，再生成 AI 描述和名称</div>' +
+        '<div id="om-acc-bimport-status" style="display:none;margin:8px 0;font-size:.82em"></div>' +
+        '<div class="om-btn-row" style="margin-top:6px" id="om-acc-bimport-actions">' +
+        '<button class="om-btn om-btn-safe" id="om-acc-bimport-start"><i class="fa-solid fa-file-import"></i> 开始导入</button>' +
+        '<button class="om-btn om-btn-outline" id="om-acc-bimport-close">取消</button></div></div>';
+
+    var _mp = getPopupLayer();
+    modal.style.cssText = 'position:absolute !important;inset:0 !important;z-index:1 !important;background:rgba(0,0,0,.45) !important;display:flex !important;align-items:center !important;justify-content:center !important;padding:20px !important;box-sizing:border-box !important;pointer-events:auto !important;';
+    _mp.appendChild(modal);
+
+    modal.addEventListener('click', function (e) { if (e.target === modal && !modal.dataset.running) _mp.removeChild(modal); });
+    modal.querySelector('#om-acc-bimport-close').addEventListener('click', function () { if (!modal.dataset.running) _mp.removeChild(modal); });
+
+    var previewEl = modal.querySelector('#om-acc-bimport-preview');
+    files.forEach(function (f) {
+        var thumb = document.createElement('div');
+        thumb.style.cssText = 'width:52px;height:52px;border-radius:6px;overflow:hidden;background:rgba(127,127,127,.1);flex-shrink:0;';
+        var reader = new FileReader();
+        reader.onload = function (e) { thumb.innerHTML = '<img src="' + e.target.result + '" style="width:100%;height:100%;object-fit:cover" />'; };
+        reader.readAsDataURL(f);
+        previewEl.appendChild(thumb);
+    });
+
+    modal.querySelector('#om-acc-bimport-cat').addEventListener('change', function () {
+        var parentVal = this.value;
+        var subField = modal.querySelector('#om-acc-bimport-sub-field');
+        var subSel = modal.querySelector('#om-acc-bimport-sub');
+        var hint = modal.querySelector('#om-acc-bimport-hint');
+        if (hint) hint.style.display = 'none';
+        if (!parentVal) {
+            subField.style.display = 'none';
+            subSel.innerHTML = '<option value="">无子分类</option>';
+            return;
+        }
+        var cp = loadCurrent();
+        var subs = getSubCats(cp.accCategories || [], parentVal);
+        subSel.innerHTML = '<option value="">无子分类</option>' +
+            subs.map(function (sc) { return '<option value="' + esc(sc) + '">' + esc(sc) + '</option>'; }).join('');
+        subField.style.display = '';
+    });
+
+    modal.querySelector('#om-acc-bimport-start').addEventListener('click', function () {
+        var cat = modal.querySelector('#om-acc-bimport-cat').value;
+        var subCat = modal.querySelector('#om-acc-bimport-sub') ? modal.querySelector('#om-acc-bimport-sub').value || '' : '';
+        var useAI = hasApi && modal.querySelector('#om-acc-bimport-ai') && modal.querySelector('#om-acc-bimport-ai').checked;
+        var hintEl = modal.querySelector('#om-acc-bimport-hint');
+        if (useAI && !cat) {
+            if (hintEl) hintEl.style.display = 'block';
+            return;
+        }
+        if (hintEl) hintEl.style.display = 'none';
+
+        modal.dataset.running = '1';
+        modal.querySelector('#om-acc-bimport-start').disabled = true;
+        modal.querySelector('#om-acc-bimport-start').textContent = '导入中...';
+        modal.querySelector('#om-acc-bimport-close').textContent = '请等待...';
+        var statusEl = modal.querySelector('#om-acc-bimport-status');
+        statusEl.style.display = 'block';
+
+        var pending = files.length;
+        var baseCount = (loadCurrent().accessories || []).length;
+        var importedAccs = [];
+        var newIds = [];
+
+        function finishImport() {
+            var importedList = importedAccs.filter(function (a) { return !!a; });
+            var idList = newIds.filter(function (id) { return !!id; });
+            if (importedList.length === 0) {
+                delete modal.dataset.running;
+                statusEl.innerHTML = '<div style="color:#e57373">图片读取失败</div>';
+                modal.querySelector('#om-acc-bimport-start').disabled = false;
+                modal.querySelector('#om-acc-bimport-start').textContent = '重新导入';
+                modal.querySelector('#om-acc-bimport-close').textContent = '取消';
+                return;
+            }
+            var p = loadCurrent();
+            if (!Array.isArray(p.accessories)) p.accessories = [];
+            p.accessories = importedList.concat(p.accessories);
+            saveCurrent(p);
+            fn.renderAccCatbar(); fn.renderGrid();
+            statusEl.innerHTML = '<div style="color:#4caf50;font-weight:600">已导入 ' + importedList.length + ' 个单品</div>';
+            if (useAI && fn.openAccBatchDescModal) {
+                _mp.removeChild(modal);
+                fn.openAccBatchDescModal(idList);
+            } else {
+                delete modal.dataset.running;
+                modal.querySelector('#om-acc-bimport-actions').innerHTML = '<button class="om-btn om-btn-safe" id="om-acc-bimport-done">完成</button>';
+                modal.querySelector('#om-acc-bimport-done').addEventListener('click', function () { _mp.removeChild(modal); });
+            }
+        }
+
+        files.forEach(function (file, idx) {
+            var reader = new FileReader();
+            reader.onload = function (e) {
+                compressImage(e.target.result, function (compressed) {
+                    var id = 'a_' + genId().substring(0, 8);
+                    importedAccs[idx] = {
+                        id: id,
+                        name: '单品' + (baseCount + idx + 1),
+                        category: cat,
+                        subCategory: subCat,
+                        description: '',
+                        imageData: compressed,
+                        createdAt: Date.now()
+                    };
+                    newIds[idx] = id;
+                    pending--;
+                    statusEl.textContent = '压缩中... ' + (files.length - pending) + '/' + files.length;
+                    if (pending === 0) finishImport();
+                });
+            };
+            reader.onerror = function () {
+                pending--;
+                if (pending === 0) finishImport();
+            };
+            reader.readAsDataURL(file);
+        });
+    });
+}
+
 // ── 单品编辑弹窗 ─────────────────────────────────────────
 function openAccEditSheet(acc, defaultCat) {
     var editImgData = acc ? (acc.imageData || null) : null;
@@ -1607,39 +1753,10 @@ function openAccEditSheet(acc, defaultCat) {
         accBatchFileInp.addEventListener('change', function () {
             var files = Array.from(accBatchFileInp.files || []).filter(function (f) { return f.type.indexOf('image') === 0; });
             if (files.length === 0) { toast('未选择图片', true); return; }
-            closeSheet(sheet);
-            // 批量创建单品：每张图一个单品
             var cat = sheet.querySelector('#om-acc-dcat').value || '';
             var subCat = sheet.querySelector('#om-acc-dsubcat') ? sheet.querySelector('#om-acc-dsubcat').value || '' : '';
-            var pending = files.length;
-            var baseCount = (loadCurrent().accessories || []).length;
-            var importedAccs = [];
-            files.forEach(function (file, idx) {
-                var reader = new FileReader();
-                reader.onload = function (e) {
-                    compressImage(e.target.result, function (compressed) {
-                        importedAccs[idx] = {
-                            id: 'a_' + genId().substring(0, 8),
-                            name: '单品' + (baseCount + idx + 1),
-                            category: cat,
-                            subCategory: subCat,
-                            description: '',
-                            imageData: compressed,
-                            createdAt: Date.now()
-                        };
-                        pending--;
-                        if (pending === 0) {
-                            var curP = loadCurrent();
-                            if (!Array.isArray(curP.accessories)) curP.accessories = [];
-                            curP.accessories = importedAccs.filter(function (a) { return !!a; }).concat(curP.accessories);
-                            saveCurrent(curP);
-                            fn.renderAccCatbar(); fn.renderGrid();
-                            toast('✅ 已导入 ' + files.length + ' 个单品');
-                        }
-                    });
-                };
-                reader.readAsDataURL(file);
-            });
+            closeSheet(sheet);
+            openAccBatchImportModal(files, cat, subCat);
             accBatchFileInp.value = '';
         });
     }

@@ -853,6 +853,14 @@ function openBatchDescModal(ids) {
 function openAccBatchDescModal(ids) {
     var meta = loadMeta();
     var curP = loadCurrent();
+    var missingCat = ids.filter(function (id) {
+        var a = partGetAccById(curP, id);
+        return a && (!a.category || !a.category.trim());
+    }).length;
+    if (missingCat > 0) {
+        toast('请先为单品选择分类，再批量生成描述和名称', true);
+        return;
+    }
     var withImg = ids.filter(function (id) { var a = partGetAccById(curP, id); return a && a.imageData; });
     var skipCount = ids.length - withImg.length;
     var willSkipDesc = withImg.filter(function (id) { var a = partGetAccById(curP, id); return a && a.description && a.description.trim() && !meta.apiVision.overwrite; }).length;
