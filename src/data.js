@@ -49,20 +49,20 @@ export function defMeta() {
         apiVision: {
             endpoint: '', key: '', model: '',
             prompt: '用JSON回复（不要代码块）：{"name":"穿搭名称6字以内","description":"描述服装类型颜色材质款式搭配，只写服装不写人，100-200字"}',
-            accPrompt: '用JSON回复（不要代码块）：{"name":"配饰名称6字以内","description":"只描述图中的【{{accCategory}}】这一件单品，详细描述它的材质、颜色、款式、细节特征，不要描述其他服饰或整体穿搭，80-150字"}',
+            accPrompt: '用JSON回复（不要代码块）：{"name":"单品名称6字以内","description":"只描述图中的【{{accCategory}}】这一件单品，详细描述它的材质、颜色、款式、细节特征，不要描述其他服饰或整体穿搭，80-150字"}',
             overwrite: false
         }
     };
 }
 
-// ── partition 默认值（outfits + 分类 + 激活选择 + 配饰）──
+// ── partition 默认值（outfits + 分类 + 激活选择 + 单品）──
 export function defPartition() {
     return {
         outfits: [],
         categories: [],
         activeIds: [],
-        accessories: [],       // 配饰列表
-        accCategories: []      // 配饰分类（结构同 categories）
+        accessories: [],       // 单品列表
+        accCategories: []      // 单品分类（结构同 categories）
     };
 }
 
@@ -169,10 +169,10 @@ export function partIsActive(part, id) {
 }
 
 // ══════════════════════════════════════════════════════════
-//  配饰 (Accessory) 辅助函数
+//  单品 (Accessory) 辅助函数
 // ══════════════════════════════════════════════════════════
 
-// 在 partition 内查找配饰 by id
+// 在 partition 内查找单品 by id
 export function partGetAccById(part, id) {
     if (!part || !part.accessories) return null;
     for (var i = 0; i < part.accessories.length; i++) {
@@ -229,7 +229,7 @@ export function getActiveKit(outfit) {
     return null;
 }
 
-// 获取 kit 关联的配饰对象列表（跳过悬空引用 + 去重）
+// 获取 kit 关联的单品对象列表（跳过悬空引用 + 去重）
 export function getKitAccessories(part, kit) {
     if (!part || !kit || !Array.isArray(kit.accIds)) return [];
     var result = [];
@@ -244,7 +244,7 @@ export function getKitAccessories(part, kit) {
     return result;
 }
 
-// 删除配饰时，清理所有 outfit.kits 里的引用
+// 删除单品时，清理所有 outfit.kits 里的引用
 export function cleanAccIdFromKits(part, accId) {
     if (!part || !part.outfits) return;
     part.outfits.forEach(function (o) {

@@ -450,8 +450,31 @@ function reassembleFullData() {
 //  Meta 读写
 // ══════════════════════════════════════════════════════════
 
+function normalizeSharedCharState(meta) {
+    var changed = false;
+    if (!Array.isArray(meta.charIndex)) { meta.charIndex = []; changed = true; }
+
+    var hasShared = false;
+    var hasCurrent = false;
+    meta.charIndex.forEach(function (ci) {
+        if (!ci) return;
+        if (ci.id === SHARED_CHAR_KEY) hasShared = true;
+        if (ci.id === meta.currentChar) hasCurrent = true;
+    });
+    if (!hasShared) {
+        meta.charIndex.unshift({ id: SHARED_CHAR_KEY, name: SHARED_CHAR_KEY, partKey: 'char:__shared__' });
+        changed = true;
+    }
+    if (meta.currentView === 'char' && (!meta.currentChar || !hasCurrent)) {
+        meta.currentChar = SHARED_CHAR_KEY;
+        changed = true;
+    }
+    return changed;
+}
+
 export function loadMeta() {
     if (!metaCache) metaCache = defMeta();
+    if (normalizeSharedCharState(metaCache)) saveMeta(metaCache);
     return metaCache;
 }
 
@@ -1536,9 +1559,9 @@ export function save(d) {
     } else if (pendingCurrentChar) {
         // charIdByName 读的是 meta.charIndex（刚更新过），包含改名后的记录
         var resolvedCid = charIdByName(pendingCurrentChar);
-        meta.currentChar = resolvedCid || '';
+        meta.currentChar = resolvedCid || (meta.currentView === 'char' ? SHARED_CHAR_KEY : '');
     } else {
-        meta.currentChar = '';
+        meta.currentChar = meta.currentView === 'char' ? SHARED_CHAR_KEY : '';
     }
 
     // ── 5. chars 数据回写到各 partition ──

@@ -224,7 +224,7 @@ export function batchGenerateDescriptions(outfitIds, options, progressCb, doneCb
     });
 }
 
-// ── 批量生成配饰描述（并发队列）──────────────────────────
+// ── 批量生成单品描述（并发队列）──────────────────────────
 export function batchGenerateAccDescriptions(accIds, options, progressCb, doneCb) {
     options = options || {};
     var meta = loadMeta();
@@ -236,7 +236,7 @@ export function batchGenerateAccDescriptions(accIds, options, progressCb, doneCb
         var a = partGetAccById(srcPart, id);
         if (!a || !a.imageData) return;
         if (a.description && a.description.trim() && !apiCfg.overwrite) return;
-        queue.push({ id: id, name: a.name, category: a.category || '配饰', dataUrl: a.imageData });
+        queue.push({ id: id, name: a.name, category: a.category || '单品', dataUrl: a.imageData });
     });
     if (queue.length === 0) { doneCb(null, 0, []); return; }
 
@@ -259,7 +259,7 @@ export function batchGenerateAccDescriptions(accIds, options, progressCb, doneCb
                 (function (item) {
                     running++;
                     var prompt = (apiCfg.accPrompt || apiCfg.prompt || '')
-                        .replace(/\{\{accCategory\}\}/g, item.category || '配饰');
+                        .replace(/\{\{accCategory\}\}/g, item.category || '单品');
                     callVisionAPI(apiCfg, item, prompt, function (err, text) {
                         running--;
                         done++;
@@ -271,7 +271,7 @@ export function batchGenerateAccDescriptions(accIds, options, progressCb, doneCb
                             var parsed = parseAIResponse(text);
                             var cp = loadPartition(sourcePartKey);
                             var acc = partGetAccById(cp, item.id);
-                            if (!acc) { errors.push({ name: item.name, error: '未找到配饰数据' }); }
+                            if (!acc) { errors.push({ name: item.name, error: '未找到单品数据' }); }
                             else {
                                 if (parsed && parsed.description) {
                                     acc.description = parsed.description;
@@ -314,14 +314,14 @@ export function generateSingleDescription(outfit, cb) {
     });
 }
 
-// ── 单个配饰描述生成（返回结构化数据）────────────────────
+// ── 单个单品描述生成（返回结构化数据）────────────────────
 export function generateSingleAccDescription(acc, cb) {
     var meta = loadMeta();
     var apiCfg = meta.apiVision;
     if (!apiCfg.endpoint || !apiCfg.key || !apiCfg.model) { cb('请先在设置中配置描述API'); return; }
-    if (!acc.imageData) { cb('该配饰没有图片'); return; }
+    if (!acc.imageData) { cb('该单品没有图片'); return; }
     var prompt = (apiCfg.accPrompt || apiCfg.prompt || '')
-        .replace(/\{\{accCategory\}\}/g, acc.category || '配饰');
+        .replace(/\{\{accCategory\}\}/g, acc.category || '单品');
     resolveImageForExternal(acc.imageData, function (resolvedUrl) {
         callVisionAPI(apiCfg, { name: acc.name || '', dataUrl: resolvedUrl }, prompt, function (err, text) {
             if (err) { cb(err); return; }

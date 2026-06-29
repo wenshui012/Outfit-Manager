@@ -168,7 +168,7 @@ function saveFocusedKitDraft() {
     var kit = getActiveKit(ctx.outfit);
 
     if (!kit) {
-        if (draft.length === 0) { toast('请先选择配饰', true); return; }
+        if (draft.length === 0) { toast('请先选择单品', true); return; }
         var autoName = nextKitName(ctx.outfit.kits);
         var rawName = prompt('套装名称（留空自动命名）：', autoName);
         if (rawName === null) return;
@@ -214,7 +214,7 @@ function filterActiveForCurrentMode() {
 
 function updateSearchPlaceholder() {
     var inp = document.getElementById('om-search-inp');
-    if (inp) inp.placeholder = state.accMode ? '搜索配饰…' : '搜索穿搭…';
+    if (inp) inp.placeholder = state.accMode ? '搜索单品…' : '搜索穿搭…';
 }
 
 function updateFilterBarForMode() {
@@ -231,8 +231,8 @@ function updateBatchButtonState() {
 
 function batchDeleteAccessories(accIds) {
     accIds = uniqueIds(accIds || []);
-    if (accIds.length === 0) { toast('请先选择配饰', true); return; }
-    if (!confirm('确定删除 ' + accIds.length + ' 个配饰？引用它们的套装方案将自动更新。')) return;
+    if (accIds.length === 0) { toast('请先选择单品', true); return; }
+    if (!confirm('确定删除 ' + accIds.length + ' 个单品？引用它们的套装方案将自动更新。')) return;
     var part = loadCurrent();
     part.accessories = (part.accessories || []).filter(function (acc) {
         return accIds.indexOf(acc.id) === -1;
@@ -248,16 +248,16 @@ function batchDeleteAccessories(accIds) {
     fn.renderAccCatbar();
     renderGrid();
     renderBottomStatus();
-    toast('已删除 ' + accIds.length + ' 个配饰');
+    toast('已删除 ' + accIds.length + ' 个单品');
 }
 
 function openAccBatchCategorySheet(accIds) {
     accIds = uniqueIds(accIds || []);
-    if (accIds.length === 0) { toast('请先选择配饰', true); return; }
+    if (accIds.length === 0) { toast('请先选择单品', true); return; }
     var part = loadCurrent();
     var cats = part.accCategories || [];
     var catNames = getCatNames(cats);
-    if (catNames.length === 0) { toast('还没有配饰分类，请先在设置中添加', true); return; }
+    if (catNames.length === 0) { toast('还没有单品分类，请先在设置中添加', true); return; }
     var itemsHtml = '';
     cats.forEach(function (catObj) {
         var catName = typeof catObj === 'object' ? catObj.name : catObj;
@@ -378,7 +378,7 @@ function openPopup() {
         '<div class="om-viewbar" id="om-viewbar"></div>' +
         '<div class="om-catbar-wrap">' +
         '<div class="om-catbar" id="om-catbar"></div>' +
-        '<button class="om-acc-toggle" id="om-acc-toggle" title="配饰"><i class="fa-solid fa-chevron-down"></i></button>' +
+        '<button class="om-acc-toggle" id="om-acc-toggle" title="单品"><i class="fa-solid fa-chevron-down"></i></button>' +
         '</div>' +
         '<div class="om-acc-catbar" id="om-acc-catbar"></div>' +
         '<div class="om-batch-area" id="om-batch-area"></div>' +
@@ -474,7 +474,7 @@ function openPopup() {
     ov.querySelector('#om-bottom-presets').addEventListener('click', function () { fn.openPresetsSheet(); });
     ov.querySelector('#om-bottom-settings').addEventListener('click', function () { fn.openSettingsSheet(); });
 
-    // 配饰栏展开/折叠
+    // 单品栏展开/折叠
     ov.querySelector('#om-acc-toggle').addEventListener('click', function () {
         state.accMode = !state.accMode;
         state.batchMode = false;
@@ -632,7 +632,7 @@ function renderCharDropdown(vbar, d, query) {
         var ugLabel = (favNames.length > 0 || Object.keys(groups).length > 0) ? '未分组' : '全部角色';
         listHtml += makeSection(ugLabel, 'fa-regular fa-folder-open', ungrouped, '__ungrouped__');
     }
-    if (allNames.length === 0) listHtml = '<div class="om-char-empty">还没有角色，点 + 添加</div>';
+    if (allNames.length === 0) listHtml += '<div class="om-char-empty">还没有角色，点 + 添加</div>';
 
     var dropdown = document.createElement('div');
     dropdown.className = 'om-char-dropdown';
@@ -840,7 +840,7 @@ function renderCatbar() {
     }
 }
 
-// ── 配饰分类栏渲染 ─────────────────────────────────────────
+// ── 单品分类栏渲染 ─────────────────────────────────────────
 function renderAccCatbar() {
     var accbar = document.getElementById('om-acc-catbar'); if (!accbar) return;
 
@@ -875,13 +875,7 @@ function renderAccCatbar() {
             html += '<button class="om-catbtn' + (state.accCat === c ? ' on' : '') + '" data-ac="' + esc(c) + '">' + esc(c) + '</button>';
         });
     }
-    html += '<button class="om-catbtn om-acc-manage-btn" id="om-acc-cats-manage" title="管理配饰分类"><i class="fa-solid fa-tags"></i></button>';
-
     accbar.innerHTML = html;
-    var manageBtn = accbar.querySelector('#om-acc-cats-manage');
-    if (manageBtn) manageBtn.addEventListener('click', function () {
-        fn.openCatsSheet(true);
-    });
 
     // 事件绑定
     if (state.accDrillParent) {
@@ -934,7 +928,7 @@ function renderGrid() {
 
     var part = loadCurrent();
 
-    // ── 配饰模式：显示配饰卡片 ──
+    // ── 单品模式：显示单品卡片 ──
     if (state.accMode) {
         renderAccGrid(area, part);
         return;
@@ -1254,12 +1248,12 @@ function renderGrid() {
     }
 }
 
-// ── 配饰网格渲染 ────────────────────────────────────────
+// ── 单品网格渲染 ────────────────────────────────────────
 function renderAccGrid(area, part) {
     ensureKitFocusForAccMode(false);
     var allAcc = part.accessories || [];
 
-    // 按配饰分类过滤
+    // 按单品分类过滤
     var list;
     if (state.accDrillParent) {
         var parentCat = state.accDrillParent;
@@ -1310,14 +1304,14 @@ function renderAccGrid(area, part) {
 
     var html = '<div class="om-grid">';
     if (!state.batchMode) {
-        html += '<div class="om-add-card" id="om-acc-addcard"><i class="fa-solid fa-plus"></i><span>添加配饰</span></div>';
+        html += '<div class="om-add-card" id="om-acc-addcard"><i class="fa-solid fa-plus"></i><span>添加单品</span></div>';
     }
 
     if (list.length === 0) {
         var hasFilter = state.filterNoCat || state.filterNoDesc;
-        var emptyMsg = state.searchQuery ? '没有匹配的配饰'
-            : hasFilter ? '没有符合筛选条件的配饰'
-            : (state.accCat !== '__all__' ? '该分类暂无配饰' : '还没有配饰，点击添加');
+        var emptyMsg = state.searchQuery ? '没有匹配的单品'
+            : hasFilter ? '没有符合筛选条件的单品'
+            : (state.accCat !== '__all__' ? '该分类暂无单品' : '还没有单品，点击添加');
         html += '</div><div class="om-empty"><i class="fa-solid fa-gem"></i><span>' + emptyMsg + '</span></div>';
     } else {
         list.forEach(function (a) {
@@ -1352,7 +1346,7 @@ function renderAccGrid(area, part) {
 
     area.innerHTML = html;
 
-    // 配饰懒加载
+    // 单品懒加载
     setupAccLazyImages(area);
 
     if (state.batchMode && batchArea) {
@@ -1374,7 +1368,7 @@ function renderAccGrid(area, part) {
             openAccBatchCategorySheet(state.batchSelected.slice());
         });
         if (moveBtn) moveBtn.addEventListener('click', function () {
-            if (state.batchSelected.length === 0) { toast('请先选择配饰', true); return; }
+            if (state.batchSelected.length === 0) { toast('请先选择单品', true); return; }
             if (fn.openAccMoveToPanel) {
                 fn.openAccMoveToPanel(state.batchSelected.slice(), function () {
                     state.batchSelected = [];
@@ -1390,26 +1384,26 @@ function renderAccGrid(area, part) {
             batchDeleteAccessories(state.batchSelected.slice());
         });
         if (descBtn) descBtn.addEventListener('click', function () {
-            if (state.batchSelected.length === 0) { toast('请先选择配饰', true); return; }
+            if (state.batchSelected.length === 0) { toast('请先选择单品', true); return; }
             var m = loadMeta();
             if (!m.apiVision.endpoint || !m.apiVision.key || !m.apiVision.model) {
                 toast('请先在设置中配置"描述生成 API"', true); return;
             }
             var curP = loadCurrent();
             var hasImg = state.batchSelected.some(function (id) { var acc = partGetAccById(curP, id); return acc && acc.imageData; });
-            if (!hasImg) { toast('所选配饰中没有带图片的', true); return; }
+            if (!hasImg) { toast('所选单品中没有带图片的', true); return; }
             if (fn.openAccBatchDescModal) fn.openAccBatchDescModal(state.batchSelected.slice());
         });
     }
 
-    // 添加配饰
+    // 添加单品
     var ac = area.querySelector('#om-acc-addcard');
     if (ac) ac.addEventListener('click', function () {
         var defCat = state.accDrillParent || (state.accCat !== '__all__' ? state.accCat : '');
         fn.openAccEditSheet(null, defCat);
     });
 
-    // 配饰卡片点击 → 临时选择到当前主体草稿
+    // 单品卡片点击 → 临时选择到当前主体草稿
     area.querySelectorAll('.om-acc-card').forEach(function (card) {
         card.addEventListener('click', function (e) {
             if (e.target.closest('.om-card-menu')) return;
@@ -1452,7 +1446,7 @@ function renderAccGrid(area, part) {
     });
 }
 
-// 配饰图片懒加载
+// 单品图片懒加载
 function setupAccLazyImages(area) {
     var imgs = area.querySelectorAll('img.om-lazy-img[data-acc-id]');
     if (!imgs.length) return;
@@ -1648,7 +1642,7 @@ function openDetailPanel(groups) {
             if (!state.accMode) return;
             var pk = tag.dataset.pk;
             var id = tag.dataset.focusId;
-            if (pk !== currentPartKey()) { toast('只能为当前衣柜搭配配饰', true); return; }
+            if (pk !== currentPartKey()) { toast('只能为当前衣柜搭配单品', true); return; }
             if (setKitFocus(pk, id)) {
                 renderGrid();
                 refreshDetailPanel();
@@ -1702,4 +1696,6 @@ export function registerMainFn() {
     fn.renderBottomStatus = renderBottomStatus;
     fn.closeDetailPanel = closeDetailPanel;
     fn.preResolveActiveImages = preResolveActiveImages;
+    fn.toggleDraftAcc = toggleDraftAcc;
+    fn.draftHasAcc = draftHasAcc;
 }

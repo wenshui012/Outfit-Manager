@@ -1,7 +1,7 @@
 // ── 穿搭管理器 · 批量操作与导入导出 ──────────────────────
 // 批量标签、批量导入、批量AI生成、数据导出导入
 
-import { load, save, loadMeta, loadCurrent, saveCurrent, loadPartition, savePartition, currentPartKey, currentUserPartKey, syncActivePartitions, isServerMode, batchResolveImages, uploadImage, getImageUrlPrefix } from './db.js';
+import { load, save, loadMeta, loadCurrent, saveCurrent, loadPartition, savePartition, currentPartKey, currentUserPartKey, syncActivePartitions, charIdByName, isServerMode, batchResolveImages, uploadImage, getImageUrlPrefix } from './db.js';
 import { getCharData, getViewOutfits, getViewCategories, getById, getCatNames, getSubCats, partGetById, partGetAccById, cleanAccIdFromKits, SHARED_CHAR_KEY, SHARED_CHAR_LABEL } from './data.js';
 import { genId, esc, toast, getPopupLayer, compressImage } from './utils.js';
 import { batchGenerateDescriptions, batchGenerateAccDescriptions } from './api.js';
@@ -844,7 +844,7 @@ function openBatchDescModal(ids) {
     });
 }
 
-// ── 配饰批量 AI 生成描述弹窗 ─────────────────────────────
+// ── 单品批量 AI 生成描述弹窗 ─────────────────────────────
 function openAccBatchDescModal(ids) {
     var meta = loadMeta();
     var curP = loadCurrent();
@@ -855,15 +855,15 @@ function openAccBatchDescModal(ids) {
     modal.className = 'om-modal';
     modal.style.setProperty('z-index', '2147483647', 'important');
     modal.innerHTML = '<div class="om-modal-box" style="background:' + (state.darkMode ? '#1e1e24' : '#ececef') + ';color:' + (state.darkMode ? '#eee' : '#111') + '">' +
-        '<div class="om-modal-title"><i class="fa-solid fa-wand-magic-sparkles" style="margin-right:6px;color:var(--SmartThemeQuoteColor,#7c6daf)"></i>AI 批量生成配饰描述</div>' +
+        '<div class="om-modal-title"><i class="fa-solid fa-wand-magic-sparkles" style="margin-right:6px;color:var(--SmartThemeQuoteColor,#7c6daf)"></i>AI 批量生成单品描述</div>' +
         '<div style="font-size:.82em;opacity:.7;margin-bottom:8px">' +
-        '共选中 ' + ids.length + ' 个配饰，其中 ' + withImg.length + ' 个有图片' +
+        '共选中 ' + ids.length + ' 个单品，其中 ' + withImg.length + ' 个有图片' +
         (skipCount > 0 ? '，' + skipCount + ' 个无图片将跳过' : '') +
         (willSkipDesc > 0 ? '<br>' + willSkipDesc + ' 个已有描述将跳过（可在设置中开启覆盖）' : '') +
         '</div>' +
         '<div style="font-size:.78em;opacity:.5;margin-bottom:8px">共需 ' + (withImg.length - willSkipDesc) + ' 次 API 调用</div>' +
         '<div style="border:1px solid rgba(127,127,127,.12);border-radius:8px;padding:10px;margin-bottom:8px">' +
-        '<label style="display:flex;align-items:center;gap:6px;font-size:.82em;cursor:pointer"><input type="checkbox" id="om-acc-batch-autoname" checked /> 同时生成配饰名称（覆盖现有名称）</label>' +
+        '<label style="display:flex;align-items:center;gap:6px;font-size:.82em;cursor:pointer"><input type="checkbox" id="om-acc-batch-autoname" checked /> 同时生成单品名称（覆盖现有名称）</label>' +
         '</div>' +
         '<div id="om-acc-batch-progress" style="display:none;margin:10px 0">' +
         '<div style="font-size:.82em;margin-bottom:6px" id="om-acc-batch-prog-text">准备中...</div>' +
@@ -892,7 +892,7 @@ function openAccBatchDescModal(ids) {
         closeBtn.textContent = '后台运行';
         closeBtn.onclick = function () {
             removeModal();
-            toast('AI 正在生成配饰描述，可继续使用酒馆，完成后会通知');
+            toast('AI 正在生成单品描述，可继续使用酒馆，完成后会通知');
         };
 
         var options = {
@@ -938,9 +938,9 @@ function openAccBatchDescModal(ids) {
                     });
                 } else {
                     if (failCount > 0) {
-                        toast('AI 配饰描述生成完成：' + successCount + ' 成功，' + failCount + ' 失败');
+                        toast('AI 单品描述生成完成：' + successCount + ' 成功，' + failCount + ' 失败');
                     } else {
-                        toast('AI 配饰描述生成完成：' + successCount + ' 条描述已就绪');
+                        toast('AI 单品描述生成完成：' + successCount + ' 条描述已就绪');
                     }
                     fn.renderGrid();
                 }
@@ -1218,37 +1218,32 @@ function executeMove(selectedIds, targetType, targetChar, presetIdx, targetCat, 
     if (onDone) onDone();
 }
 
-// ── 配饰移动 / 复制 ──────────────────────────────────────
+// ── 单品移动 / 复制 ──────────────────────────────────────
 function openAccMoveToPanel(accIds, onDone) {
     accIds = (accIds || []).slice();
-    if (accIds.length === 0) { toast('请先选择配饰', true); return; }
+    if (accIds.length === 0) { toast('请先选择单品', true); return; }
     var sourcePartKey = currentPartKey();
     var sourcePart = loadPartition(sourcePartKey);
     var sourceAccs = accIds.map(function (id) { return partGetAccById(sourcePart, id); }).filter(function (a) { return !!a; });
-    if (sourceAccs.length === 0) { toast('未找到配饰', true); return; }
+    if (sourceAccs.length === 0) { toast('未找到单品', true); return; }
 
-    var meta = loadMeta();
+    var d = load();
     var isCopy = false;
-    var currentLabel = sourcePartKey.indexOf('user:') === 0 ? 'User' : '角色衣柜';
+    var isCharView = d.currentView === 'char' && d.currentChar;
+    var currentLabel = isCharView ? (d.currentChar === SHARED_CHAR_KEY ? SHARED_CHAR_LABEL : d.currentChar) : 'User';
 
-    var html = '<div class="om-sheet-title"><i class="fa-solid fa-arrow-right-arrow-left"></i>移动 / 复制单品</div>';
+    var html = '<div class="om-sheet-title"><i class="fa-solid fa-arrow-right-arrow-left"></i>移动 / 复制</div>';
     html += '<div class="om-hint" style="margin-bottom:10px">' + sourceAccs.length + ' 件单品 · 来自：' + esc(currentLabel) + '</div>';
     html += '<div class="om-move-toggle">' +
         '<button class="om-move-toggle-btn on" data-mode="move"><i class="fa-solid fa-arrow-right-arrow-left"></i> 移动</button>' +
         '<button class="om-move-toggle-btn" data-mode="copy"><i class="fa-regular fa-copy"></i> 复制</button></div>';
     html += '<div class="om-divider" style="margin:10px 0"></div>';
-    html += '<div class="om-cat-item om-acc-move-target" data-pk="user:__default__" data-label="User 默认衣柜" style="cursor:pointer;padding:14px"><i class="fa-solid fa-user" style="opacity:.45;width:22px;text-align:center;margin-right:8px"></i><span class="om-cat-name" style="font-weight:600;font-size:1em">User 默认衣柜</span></div>';
-    (meta.presets || []).forEach(function (p) {
-        if (!p || !p.partKey) return;
-        html += '<div class="om-cat-item om-acc-move-target" data-pk="' + esc(p.partKey) + '" data-label="' + esc(p.name || '预设') + '" style="cursor:pointer;padding:14px"><i class="fa-solid fa-bookmark" style="opacity:.45;width:22px;text-align:center;margin-right:8px"></i><span class="om-cat-name" style="font-weight:600;font-size:1em">' + esc(p.name || '预设') + '</span></div>';
-    });
-    html += '<div class="om-divider" style="margin:10px 0"></div>';
-    (meta.charIndex || []).forEach(function (ci) {
-        if (!ci || !ci.partKey) return;
-        var label = ci.id === SHARED_CHAR_KEY ? SHARED_CHAR_LABEL : ci.name;
-        var icon = ci.id === SHARED_CHAR_KEY ? 'fa-globe' : 'fa-masks-theater';
-        html += '<div class="om-cat-item om-acc-move-target" data-pk="' + esc(ci.partKey) + '" data-label="' + esc(label) + '" style="cursor:pointer;padding:14px"><i class="fa-solid ' + icon + '" style="opacity:.45;width:22px;text-align:center;margin-right:8px"></i><span class="om-cat-name" style="font-weight:600;font-size:1em">' + esc(label) + '</span></div>';
-    });
+    html += '<div class="om-cat-item om-acc-move-type" data-type="user" style="cursor:pointer;padding:14px"><i class="fa-solid fa-user" style="opacity:.45;width:22px;text-align:center;margin-right:8px"></i><span class="om-cat-name" style="font-weight:600;font-size:1em">User 衣柜</span></div>';
+    html += '<div class="om-cat-item om-acc-move-type" data-type="char" style="cursor:pointer;padding:14px"><i class="fa-solid fa-masks-theater" style="opacity:.45;width:22px;text-align:center;margin-right:8px"></i><span class="om-cat-name" style="font-weight:600;font-size:1em">角色衣柜</span></div>';
+    if (Array.isArray(d.presets) && d.presets.length > 0) {
+        html += '<div class="om-divider" style="margin:10px 0"></div>';
+        html += '<div class="om-cat-item om-acc-move-type" data-type="preset" style="cursor:pointer;padding:14px"><i class="fa-solid fa-bookmark" style="opacity:.45;width:22px;text-align:center;margin-right:8px"></i><span class="om-cat-name" style="font-weight:600;font-size:1em">复制到预设</span></div>';
+    }
 
     var sheet = createSheet(html);
     sheet.querySelectorAll('.om-move-toggle-btn').forEach(function (btn) {
@@ -1257,19 +1252,24 @@ function openAccMoveToPanel(accIds, onDone) {
             sheet.querySelectorAll('.om-move-toggle-btn').forEach(function (b) { b.classList.toggle('on', b === btn); });
         });
     });
-    sheet.querySelectorAll('.om-acc-move-target').forEach(function (row) {
+    sheet.querySelectorAll('.om-acc-move-type').forEach(function (row) {
         row.addEventListener('click', function () {
             closeSheet(sheet);
-            openAccMoveCategorySheet(sourceAccs, sourcePartKey, row.dataset.pk, row.dataset.label || '目标衣柜', isCopy, onDone);
+            openAccMoveDetailSheet(sourceAccs, sourcePartKey, row.dataset.type, isCopy, onDone);
         });
     });
 }
 
-function openAccMoveCategorySheet(sourceAccs, sourcePartKey, targetPartKey, targetLabel, isCopy, onDone) {
-    var targetPart = loadPartition(targetPartKey);
-    if (!Array.isArray(targetPart.accCategories)) targetPart.accCategories = [];
+function openAccMoveDetailSheet(sourceAccs, sourcePartKey, type, isCopy, onDone) {
+    var d = load();
+    var count = sourceAccs.length;
     var exp = {};
     var actionWord = isCopy ? '复制' : '移动';
+
+    function doAction(targetType, targetChar, presetIdx, targetCat, targetSub) {
+        closeSheet(sheet);
+        executeAccMove(sourceAccs, sourcePartKey, targetType, targetChar, presetIdx, targetCat, targetSub, isCopy, onDone);
+    }
 
     function buildCatTree(cats, indent) {
         var h = '';
@@ -1293,37 +1293,123 @@ function openAccMoveCategorySheet(sourceAccs, sourcePartKey, targetPartKey, targ
         return h;
     }
 
+    function render() {
+        var dd = load();
+        var h = '';
+        if (type === 'user') {
+            var up = loadPartition(currentUserPartKey());
+            h += buildCatTree(up.accCategories || [], 16);
+        } else if (type === 'char') {
+            var shCd = getCharData(dd, SHARED_CHAR_KEY);
+            var shOpen = exp[SHARED_CHAR_KEY];
+            h += '<div class="om-acc-row om-acc-char" data-cn="' + SHARED_CHAR_KEY + '"><i class="fa-solid fa-chevron-right om-acc-arrow' + (shOpen ? ' open' : '') + '"></i><i class="fa-solid fa-globe" style="opacity:.45;margin-right:5px"></i>' + SHARED_CHAR_LABEL + '</div>';
+            if (shOpen) h += buildCatTree(shCd.accCategories || [], 36);
+            (dd.charNames || []).forEach(function (cn) {
+                var cd = getCharData(dd, cn);
+                var cOpen = exp[cn];
+                h += '<div class="om-acc-row om-acc-char" data-cn="' + esc(cn) + '"><i class="fa-solid fa-chevron-right om-acc-arrow' + (cOpen ? ' open' : '') + '"></i><i class="fa-solid fa-masks-theater" style="opacity:.45;margin-right:5px"></i>' + esc(cn) + '</div>';
+                if (cOpen) h += buildCatTree(cd.accCategories || [], 36);
+            });
+        } else if (type === 'preset') {
+            (dd.presets || []).forEach(function (p, pi) {
+                if (!p) return;
+                var pOpen = exp['p_' + pi];
+                h += '<div class="om-acc-row om-acc-preset" data-pidx="' + pi + '"><i class="fa-solid fa-chevron-right om-acc-arrow' + (pOpen ? ' open' : '') + '"></i><i class="fa-solid fa-bookmark" style="opacity:.45;margin-right:5px"></i>' + esc(p.name || '预设' + (pi + 1)) + ' <span style="opacity:.4;font-size:.85em">' + (p.accessories ? p.accessories.length : 0) + '件</span></div>';
+                if (pOpen) h += buildCatTree((p && p.accCategories) || [], 36);
+            });
+        }
+        return h;
+    }
+
     function refresh() {
+        var scrollEl = sheet.querySelector('.om-sheet-scroll');
+        var scrollTop = scrollEl ? scrollEl.scrollTop : 0;
         var body = sheet.querySelector('.om-acc-body');
-        if (body) body.innerHTML = buildCatTree(targetPart.accCategories || [], 16);
+        if (body) body.innerHTML = render();
         bindEvents();
+        if (scrollEl) scrollEl.scrollTop = scrollTop;
     }
 
     function bindEvents() {
-        sheet.querySelectorAll('.om-acc-cat-toggle').forEach(function (row) {
+        var content = sheet.querySelector('.om-sheet-scroll') || sheet;
+        content.querySelectorAll('.om-acc-char').forEach(function (row) {
+            row.addEventListener('click', function () { exp[row.dataset.cn] = !exp[row.dataset.cn]; refresh(); });
+        });
+        content.querySelectorAll('.om-acc-preset').forEach(function (row) {
+            row.addEventListener('click', function () { var k = 'p_' + row.dataset.pidx; exp[k] = !exp[k]; refresh(); });
+        });
+        content.querySelectorAll('.om-acc-cat-toggle').forEach(function (row) {
             row.addEventListener('click', function () { exp[row.dataset.key] = !exp[row.dataset.key]; refresh(); });
         });
-        sheet.querySelectorAll('.om-acc-leaf').forEach(function (leaf) {
+        content.querySelectorAll('.om-acc-leaf').forEach(function (leaf) {
             leaf.addEventListener('click', function () {
-                executeAccMove(sourceAccs, sourcePartKey, targetPartKey, leaf.dataset.cat || '', leaf.dataset.sub || '', isCopy, onDone);
-                closeSheet(sheet);
+                var cat = leaf.dataset.cat || '';
+                var sub = leaf.dataset.sub || '';
+                if (type === 'user') {
+                    doAction('user', '', -1, cat, sub);
+                } else if (type === 'char') {
+                    var charName = '';
+                    var prev = leaf.previousElementSibling;
+                    while (prev) {
+                        if (prev.classList.contains('om-acc-char') && exp[prev.dataset.cn]) { charName = prev.dataset.cn; break; }
+                        prev = prev.previousElementSibling;
+                    }
+                    if (charName) doAction('char', charName, -1, cat, sub);
+                } else if (type === 'preset') {
+                    var pidx = -1;
+                    var prev2 = leaf.previousElementSibling;
+                    while (prev2) {
+                        if (prev2.classList.contains('om-acc-preset') && exp['p_' + prev2.dataset.pidx]) { pidx = parseInt(prev2.dataset.pidx); break; }
+                        prev2 = prev2.previousElementSibling;
+                    }
+                    if (pidx >= 0) doAction('preset', '', pidx, cat, sub);
+                }
             });
         });
     }
 
+    var titleIcon = type === 'user' ? 'fa-user' : type === 'char' ? 'fa-masks-theater' : 'fa-bookmark';
+    var titleText = type === 'user' ? (actionWord + '到 User 衣柜') : type === 'char' ? (actionWord + '到角色衣柜') : '复制到预设';
+
     var sheet = createSheet(
-        '<div class="om-sheet-title"><i class="fa-solid fa-gem"></i>' + actionWord + '到「' + esc(targetLabel) + '」</div>' +
-        '<div class="om-hint" style="margin-bottom:8px">' + sourceAccs.length + ' 件单品</div>' +
-        '<div class="om-acc-body">' + buildCatTree(targetPart.accCategories || [], 16) + '</div>'
+        '<div class="om-sheet-title"><i class="fa-solid ' + titleIcon + '"></i>' + titleText + '</div>' +
+        '<div class="om-hint" style="margin-bottom:8px">' + count + ' 件单品</div>' +
+        '<div class="om-acc-body">' + render() + '</div>'
     );
     bindEvents();
 }
 
-function executeAccMove(sourceAccs, sourcePartKey, targetPartKey, targetCat, targetSub, isCopy, onDone) {
+function executeAccMove(sourceAccs, sourcePartKey, targetType, targetChar, presetIdx, targetCat, targetSub, isCopy, onDone) {
     var count = sourceAccs.length;
+    var meta = loadMeta();
+    var targetPartKey = '';
+    var targetLabel = '目标衣柜';
+    var effectiveCopy = isCopy || targetType === 'preset';
+
+    if (targetType === 'user') {
+        targetPartKey = currentUserPartKey();
+        targetLabel = 'User';
+    } else if (targetType === 'char' && targetChar) {
+        if (targetChar === SHARED_CHAR_KEY) {
+            targetPartKey = 'char:' + SHARED_CHAR_KEY;
+            targetLabel = SHARED_CHAR_LABEL;
+        } else {
+            var cid = charIdByName(targetChar);
+            if (cid) targetPartKey = 'char:' + cid;
+            targetLabel = targetChar;
+        }
+    } else if (targetType === 'preset') {
+        var p = (meta.presets || [])[presetIdx];
+        if (p) {
+            targetPartKey = p.partKey;
+            targetLabel = p.name || '预设';
+        }
+    }
+
+    if (!targetPartKey) { toast('目标衣柜不存在', true); return; }
     var samePartition = sourcePartKey === targetPartKey;
 
-    if (samePartition && !isCopy) {
+    if (samePartition && !effectiveCopy) {
         var samePart = loadPartition(sourcePartKey);
         sourceAccs.forEach(function (src) {
             var acc = partGetAccById(samePart, src.id);
@@ -1352,7 +1438,7 @@ function executeAccMove(sourceAccs, sourcePartKey, targetPartKey, targetCat, tar
     });
     savePartition(targetPartKey, targetPart);
 
-    if (!isCopy) {
+    if (!effectiveCopy) {
         var sourcePart = loadPartition(sourcePartKey);
         var sourceIds = sourceAccs.map(function (a) { return a.id; });
         sourcePart.accessories = (sourcePart.accessories || []).filter(function (a) { return sourceIds.indexOf(a.id) === -1; });
@@ -1363,7 +1449,7 @@ function executeAccMove(sourceAccs, sourcePartKey, targetPartKey, targetCat, tar
         savePartition(sourcePartKey, sourcePart);
     }
 
-    toast((isCopy ? '已复制 ' : '已移动 ') + count + ' 件单品');
+    toast((effectiveCopy ? '已复制 ' : '已移动 ') + count + ' 件单品到「' + targetLabel + '」');
     if (onDone) onDone();
 }
 

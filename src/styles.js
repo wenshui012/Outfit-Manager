@@ -122,7 +122,7 @@ export function injectStyles() {
             'color:inherit;cursor:pointer;padding:6px 10px;font-size:.72em;opacity:.4;transition:.15s;flex-shrink:0;}',
             '.om-acc-toggle:hover,.om-acc-toggle.open{opacity:.85;color:var(--SmartThemeQuoteColor,#7c6daf);}',
 
-            /* ══ 配饰分类栏 ══ */
+            /* ══ 单品分类栏 ══ */
             '.om-acc-catbar{display:none;gap:6px;padding:6px 15px;overflow-x:auto;flex-wrap:nowrap;flex-shrink:0;',
             '-webkit-overflow-scrolling:touch;scrollbar-width:none;align-items:center;',
             'border-bottom:1px solid rgba(127,127,127,.08);background:rgba(124,109,175,.04);}',

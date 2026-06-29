@@ -207,11 +207,11 @@ function tryInjectBody(bodyStr) {
 
     if (owners.length === 0) return null;
 
-    // ── 组装注入内容（v2 + 配饰支持）──
+    // ── 组装注入内容（v2 + 单品支持）──
     var allTextParts = [];
     var ownerImageGroups = [];
 
-    // 配饰描述拼接辅助：按配饰 category 排序后拼接
+    // 单品描述拼接辅助：按单品 category 排序后拼接
     function buildAccText(partition, outfit) {
         var kit = getActiveKit(outfit);
         if (!kit) return '';
@@ -230,7 +230,7 @@ function tryInjectBody(bodyStr) {
             return 0;
         });
         var lines = accs.map(function (acc) {
-            var label = acc.category ? acc.category : '配饰';
+            var label = acc.category ? acc.category : '单品';
             var desc = (acc.description && acc.description.trim()) ? acc.description.trim() : '';
             return desc ? '[' + label + '] ' + desc : '';
         }).filter(function (l) { return l !== ''; });
