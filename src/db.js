@@ -497,6 +497,7 @@ export function loadPartition(partKey) {
 // 写 partition（本地 IDB + server 防抖）
 export function savePartition(partKey, data) {
     partCache[partKey] = data;
+    delete deletedPartKeys[partKey];
     idbPut(partKey, data);
     scheduleServerPutKey(partKey);
 }

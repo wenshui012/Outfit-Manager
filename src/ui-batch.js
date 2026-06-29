@@ -89,7 +89,8 @@ function mergeAccessoriesByName(existing, incoming) {
         var oldId = imp.id || '';
         var found = null;
         for (var i = 0; i < existing.length; i++) {
-            if (existing[i].name && imp.name && existing[i].name === imp.name) {
+            if (existing[i].name && imp.name && existing[i].name === imp.name
+                && (existing[i].category || '') === (imp.category || '')) {
                 found = existing[i];
                 break;
             }
@@ -312,6 +313,16 @@ function exportData() {
         _mp.removeChild(modal);
         var charExport = { type: 'chars_all', charNames: d.charNames, chars: {} };
         (d.charNames || []).forEach(function (cn) { charExport.chars[cn] = getCharData(d, cn); });
+        if (d.chars && d.chars[SHARED_CHAR_KEY]) {
+            var sc = d.chars[SHARED_CHAR_KEY];
+            charExport.chars[SHARED_CHAR_KEY] = {
+                outfits: sc.outfits || [],
+                categories: sc.categories || [],
+                activeIds: sc.activeIds || [],
+                accessories: sc.accessories || [],
+                accCategories: sc.accCategories || []
+            };
+        }
         doExport(charExport, 'outfit-mgr-all-chars-' + new Date().toISOString().slice(0, 10) + '.json');
         toast('✅ 已导出全部角色（' + d.charNames.length + '个）');
     });
@@ -457,6 +468,36 @@ function processImport(imported, mode) {
 
         if (imported.type === 'char' && imported.charName) {
             var cn = imported.charName;
+            if (cn === SHARED_CHAR_KEY) {
+                if (!dd.chars) dd.chars = {};
+                var srcSharedC = imported.categories || [];
+                var srcSharedAC = imported.accCategories || [];
+                if (mode === 'replace') {
+                    var sharedAccClone = cloneAccessoryList(imported.accessories || [], []);
+                    var sharedSrcO = (imported.outfits || []).map(function (o) { return cloneOutfitForImport(o, sharedAccClone.map); });
+                    dd.chars[SHARED_CHAR_KEY] = { outfits: sharedSrcO, categories: cloneJson(srcSharedC, []), activeIds: [], accessories: sharedAccClone.list, accCategories: cloneJson(srcSharedAC, []) };
+                } else if (mode === 'update') {
+                    var sharedCd0 = getCharData(dd, SHARED_CHAR_KEY);
+                    ensurePartArrays(sharedCd0);
+                    var sharedAccMap0 = mergeAccessoriesByName(sharedCd0.accessories, imported.accessories || []);
+                    var sharedMappedOutfits0 = (imported.outfits || []).map(function (o) { return remapKitAccIds(cloneJson(o, {}), sharedAccMap0); });
+                    mergeByName(sharedCd0.outfits, sharedMappedOutfits0);
+                    sharedCd0.categories = mergeCategoryList(sharedCd0.categories, srcSharedC);
+                    sharedCd0.accCategories = mergeCategoryList(sharedCd0.accCategories, srcSharedAC);
+                } else {
+                    var sharedCd = getCharData(dd, SHARED_CHAR_KEY);
+                    ensurePartArrays(sharedCd);
+                    var sharedAccAppend = cloneAccessoryList(imported.accessories || [], sharedCd.accessories);
+                    sharedAccAppend.list.forEach(function (a) { sharedCd.accessories.push(a); });
+                    sharedCd.accCategories = mergeCategoryList(sharedCd.accCategories, srcSharedAC);
+                    var sharedSrcO2 = (imported.outfits || []).map(function (o) { return cloneOutfitForImport(o, sharedAccAppend.map); });
+                    sharedSrcO2.forEach(function (o) { sharedCd.outfits.push(o); });
+                    sharedCd.categories = mergeCategoryList(sharedCd.categories, srcSharedC);
+                }
+                save(dd); fn.renderViewbar(); fn.renderCatbar(); fn.renderGrid(); fn.renderBottomStatus();
+                toast('✅ 已导入通用衣柜');
+                return;
+            }
             if (!dd.chars) dd.chars = {};
             if (!dd.charNames) dd.charNames = [];
             var srcC = imported.categories || [];
@@ -495,7 +536,8 @@ function processImport(imported, mode) {
         if (imported.type === 'chars_all' && imported.chars) {
             if (!dd.chars) dd.chars = {};
             if (!dd.charNames) dd.charNames = [];
-            var importedNames = imported.charNames || Object.keys(imported.chars);
+            var importedNames = (imported.charNames || Object.keys(imported.chars)).slice();
+            if (imported.chars[SHARED_CHAR_KEY] && importedNames.indexOf(SHARED_CHAR_KEY) === -1) importedNames.push(SHARED_CHAR_KEY);
             var totalOutfits = 0;
             importedNames.forEach(function (cn) {
                 var src = imported.chars[cn]; if (!src) return;
@@ -526,7 +568,7 @@ function processImport(imported, mode) {
                     cd2.categories = mergeCategoryList(cd2.categories, srcC2);
                     totalOutfits += srcO2.length;
                 }
-                if (dd.charNames.indexOf(cn) === -1) dd.charNames.push(cn);
+                if (cn !== SHARED_CHAR_KEY && dd.charNames.indexOf(cn) === -1) dd.charNames.push(cn);
             });
             save(dd); fn.renderViewbar(); fn.renderCatbar(); fn.renderGrid(); fn.renderBottomStatus();
             toast('✅ 已导入 ' + importedNames.length + ' 个角色（共 ' + totalOutfits + ' 套穿搭）');
