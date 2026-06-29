@@ -1250,7 +1250,6 @@ function renderGrid() {
 
 // ── 单品网格渲染 ────────────────────────────────────────
 function renderAccGrid(area, part) {
-    ensureKitFocusForAccMode(false);
     var allAcc = part.accessories || [];
 
     // 按单品分类过滤
@@ -1384,15 +1383,24 @@ function renderAccGrid(area, part) {
             batchDeleteAccessories(state.batchSelected.slice());
         });
         if (descBtn) descBtn.addEventListener('click', function () {
-            if (state.batchSelected.length === 0) { toast('请先选择单品', true); return; }
             var m = loadMeta();
             if (!m.apiVision.endpoint || !m.apiVision.key || !m.apiVision.model) {
                 toast('请先在设置中配置"描述生成 API"', true); return;
             }
             var curP = loadCurrent();
-            var hasImg = state.batchSelected.some(function (id) { var acc = partGetAccById(curP, id); return acc && acc.imageData; });
+            var ids = state.batchSelected.slice();
+            if (ids.length === 0) {
+                ids = list.filter(function (acc) {
+                    return acc && acc.imageData && (!acc.description || !acc.description.trim());
+                }).map(function (acc) { return acc.id; });
+                if (ids.length === 0) {
+                    toast('请先勾选单品，或当前筛选范围内没有可生成的未描述单品', true); return;
+                }
+                if (!confirm('未勾选单品，是否为当前筛选范围内 ' + ids.length + ' 个未描述单品生成描述？')) return;
+            }
+            var hasImg = ids.some(function (id) { var acc = partGetAccById(curP, id); return acc && acc.imageData; });
             if (!hasImg) { toast('所选单品中没有带图片的', true); return; }
-            if (fn.openAccBatchDescModal) fn.openAccBatchDescModal(state.batchSelected.slice());
+            if (fn.openAccBatchDescModal) fn.openAccBatchDescModal(ids);
         });
     }
 

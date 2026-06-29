@@ -684,9 +684,16 @@ function openBatchImportModal(files) {
         var useAI = hasApi && modal.querySelector('#om-bimport-ai') && modal.querySelector('#om-bimport-ai').checked;
         var imported = 0;
         var newIds = [];
+        var importedOutfits = [];
 
         function compressNext(i) {
             if (i >= files.length) {
+                if (importedOutfits.length > 0) {
+                    var finalPart = loadCurrent();
+                    if (!Array.isArray(finalPart.outfits)) finalPart.outfits = [];
+                    finalPart.outfits = importedOutfits.filter(function (o) { return !!o; }).concat(finalPart.outfits);
+                    saveCurrent(finalPart);
+                }
                 delete modal.dataset.running;
                 statusEl.innerHTML = '<div style="color:#4caf50;font-weight:600">✅ 已导入 ' + imported + ' 套穿搭</div>';
                 var actionsEl = modal.querySelector('#om-bimport-actions');
@@ -714,7 +721,6 @@ function openBatchImportModal(files) {
             var reader = new FileReader();
             reader.onload = function (e) {
                 compressImage(e.target.result, function (compressed) {
-                    var curP = loadCurrent();
                     var id = genId();
                     var newOutfit = {
                         id: id,
@@ -725,8 +731,7 @@ function openBatchImportModal(files) {
                         imageData: compressed,
                         createdAt: Date.now()
                     };
-                    curP.outfits.push(newOutfit);
-                    saveCurrent(curP);
+                    importedOutfits[i] = newOutfit;
                     newIds.push(id);
                     imported++;
                     compressNext(i + 1);
@@ -934,6 +939,7 @@ function openAccBatchDescModal(ids) {
                     actionsEl.innerHTML = '<button class="om-btn om-btn-safe" id="om-acc-batch-done">完成</button>';
                     modal.querySelector('#om-acc-batch-done').addEventListener('click', function () {
                         removeModal();
+                        if (fn.renderAccCatbar) fn.renderAccCatbar();
                         fn.renderGrid();
                     });
                 } else {
@@ -942,6 +948,7 @@ function openAccBatchDescModal(ids) {
                     } else {
                         toast('AI 单品描述生成完成：' + successCount + ' 条描述已就绪');
                     }
+                    if (fn.renderAccCatbar) fn.renderAccCatbar();
                     fn.renderGrid();
                 }
             }

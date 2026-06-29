@@ -698,7 +698,7 @@ function openEditSheet(outfit, defaultCat, defaultSubCat) {
         } else {
             // 新增穿搭 - 放入当前 partition
             var newOutfit = { id: genId(), name: name, category: cat, subCategory: subCat, description: desc, sceneTag: scene, imageData: editImgData, kits: [], activeKitId: null, createdAt: Date.now() };
-            curP.outfits.push(newOutfit);
+            curP.outfits.unshift(newOutfit);
         }
         saveCurrent(curP); closeSheet(sheet); toast('✨ 已保存：' + name); fn.renderCatbar(); fn.renderGrid(); fn.renderBottomStatus(); fn.updateBtn();
     });
@@ -1463,10 +1463,10 @@ function openAccContextMenu(acc) {
             var target = partGetAccById(curP, acc.id);
             if (!target) { toast('未找到单品数据', true); return; }
             if (result.description) target.description = result.description;
-            if (result.name && (!target.name || !target.name.trim())) target.name = result.name;
+            if (result.name && result.name.trim()) target.name = result.name.trim();
             saveCurrent(curP);
             fn.renderGrid();
-            toast('✨ 描述已生成');
+            toast('✅ 已生成：' + target.name);
         });
     });
 
@@ -1612,23 +1612,26 @@ function openAccEditSheet(acc, defaultCat) {
             var cat = sheet.querySelector('#om-acc-dcat').value || '';
             var subCat = sheet.querySelector('#om-acc-dsubcat') ? sheet.querySelector('#om-acc-dsubcat').value || '' : '';
             var pending = files.length;
-            var curP = loadCurrent();
-            if (!Array.isArray(curP.accessories)) curP.accessories = [];
+            var baseCount = (loadCurrent().accessories || []).length;
+            var importedAccs = [];
             files.forEach(function (file, idx) {
                 var reader = new FileReader();
                 reader.onload = function (e) {
                     compressImage(e.target.result, function (compressed) {
-                        curP.accessories.push({
+                        importedAccs[idx] = {
                             id: 'a_' + genId().substring(0, 8),
-                            name: '单品' + (curP.accessories.length + 1),
+                            name: '单品' + (baseCount + idx + 1),
                             category: cat,
                             subCategory: subCat,
                             description: '',
                             imageData: compressed,
                             createdAt: Date.now()
-                        });
+                        };
                         pending--;
                         if (pending === 0) {
+                            var curP = loadCurrent();
+                            if (!Array.isArray(curP.accessories)) curP.accessories = [];
+                            curP.accessories = importedAccs.filter(function (a) { return !!a; }).concat(curP.accessories);
                             saveCurrent(curP);
                             fn.renderAccCatbar(); fn.renderGrid();
                             toast('✅ 已导入 ' + files.length + ' 个单品');
@@ -1692,7 +1695,7 @@ function openAccEditSheet(acc, defaultCat) {
                 }
             }
         } else {
-            curP.accessories.push({ id: 'a_' + genId().substring(0, 8), name: name, category: cat, subCategory: subCat, description: desc, imageData: editImgData, createdAt: Date.now() });
+            curP.accessories.unshift({ id: 'a_' + genId().substring(0, 8), name: name, category: cat, subCategory: subCat, description: desc, imageData: editImgData, createdAt: Date.now() });
         }
         saveCurrent(curP); closeSheet(sheet); toast('✨ 已保存：' + name); fn.renderAccCatbar(); fn.renderGrid();
     });
