@@ -1,8 +1,8 @@
 // ── 穿搭管理器 · API 调用 ──────────────────────────────────
 // Vision API、模型选择、批量描述生成
 
-import { load, save, resolveImageForExternal } from './db.js';
-import { getById } from './data.js';
+import { load, save, loadMeta, loadCurrent, saveCurrent, loadPartition, savePartition, currentPartKey, resolveImageForExternal } from './db.js';
+import { getById, partGetById, partGetAccById } from './data.js';
 import { toast, getPopupLayer, esc } from './utils.js';
 
 // ── 端点规范化 ─────────────────────────────────────────
@@ -152,11 +152,15 @@ export function callVisionAPI(apiCfg, image, systemPrompt, cb) {
 
 // ── 批量生成描述（并发队列）─────────────────────────────
 export function batchGenerateDescriptions(outfitIds, options, progressCb, doneCb) {
-    var d = load();
-    var apiCfg = d.apiVision;
+    var meta = loadMeta();
+    var apiCfg = meta.apiVision;
+    // 固定源分包 key：后台运行时用户可能切换视角/预设，
+    // 回调必须写回启动时的分包，不能跟随 currentPartKey() 漂移
+    var sourcePartKey = currentPartKey();
+    var srcPart = loadPartition(sourcePartKey);
     var queue = [];
     outfitIds.forEach(function (id) {
-        var o = getById(d, id);
+        var o = partGetById(srcPart, id);
         if (!o || !o.imageData) return;
         if (o.description && o.description.trim() && !apiCfg.overwrite) return;
         queue.push({ id: id, name: o.name, dataUrl: o.imageData });
@@ -194,7 +198,9 @@ export function batchGenerateDescriptions(outfitIds, options, progressCb, doneCb
                             errors.push({ name: item.name, error: 'API 返回了空内容' });
                         } else {
                             var parsed = parseAIResponse(text);
-                            var o = getById(load(), item.id);
+                            // 用固定的 sourcePartKey 读写，不受用户切换视角影响
+                            var cp = loadPartition(sourcePartKey);
+                            var o = partGetById(cp, item.id);
                             if (!o) { errors.push({ name: item.name, error: '未找到穿搭数据' }); }
                             else {
                                 if (parsed && parsed.description) {
@@ -203,7 +209,7 @@ export function batchGenerateDescriptions(outfitIds, options, progressCb, doneCb
                                 } else {
                                     o.description = text;
                                 }
-                                save(load());
+                                savePartition(sourcePartKey, cp);
                             }
                         }
                         if (progressCb) progressCb(done, total, errors.length > 0 && errors[errors.length - 1].name === item.name ? '❌ ' + item.name : '✅ ' + item.name);
@@ -218,15 +224,106 @@ export function batchGenerateDescriptions(outfitIds, options, progressCb, doneCb
     });
 }
 
+// ── 批量生成单品描述（并发队列）──────────────────────────
+export function batchGenerateAccDescriptions(accIds, options, progressCb, doneCb) {
+    options = options || {};
+    var meta = loadMeta();
+    var apiCfg = meta.apiVision;
+    var sourcePartKey = currentPartKey();
+    var srcPart = loadPartition(sourcePartKey);
+    var queue = [];
+    accIds.forEach(function (id) {
+        var a = partGetAccById(srcPart, id);
+        if (!a || !a.imageData) return;
+        if (a.description && a.description.trim() && !apiCfg.overwrite) return;
+        queue.push({ id: id, name: a.name, category: a.category || '单品', dataUrl: a.imageData });
+    });
+    if (queue.length === 0) { doneCb(null, 0, []); return; }
+
+    var resolveCount = 0;
+    queue.forEach(function (item) {
+        resolveImageForExternal(item.dataUrl, function (resolved) {
+            item.dataUrl = resolved;
+            resolveCount++;
+            if (resolveCount >= queue.length) runBatch();
+        });
+    });
+
+    function runBatch() {
+        var done = 0, errors = [], running = 0, idx = 0;
+        var total = queue.length;
+        var concurrency = 3;
+
+        function processNext() {
+            while (running < concurrency && idx < queue.length) {
+                (function (item) {
+                    running++;
+                    var prompt = (apiCfg.accPrompt || apiCfg.prompt || '')
+                        .replace(/\{\{accCategory\}\}/g, item.category || '单品');
+                    callVisionAPI(apiCfg, item, prompt, function (err, text) {
+                        running--;
+                        done++;
+                        if (err) {
+                            errors.push({ name: item.name, error: err });
+                        } else if (!text || !text.trim()) {
+                            errors.push({ name: item.name, error: 'API 返回了空内容' });
+                        } else {
+                            var parsed = parseAIResponse(text);
+                            var cp = loadPartition(sourcePartKey);
+                            var acc = partGetAccById(cp, item.id);
+                            if (!acc) { errors.push({ name: item.name, error: '未找到单品数据' }); }
+                            else {
+                                if (parsed && parsed.description) {
+                                    acc.description = parsed.description;
+                                    if (options.autoName && parsed.name && parsed.name.trim()) acc.name = parsed.name.trim();
+                                } else {
+                                    acc.description = text;
+                                }
+                                savePartition(sourcePartKey, cp);
+                            }
+                        }
+                        if (progressCb) progressCb(done, total, errors.length > 0 && errors[errors.length - 1].name === item.name ? '❌ ' + item.name : '✅ ' + item.name);
+                        if (done >= total) { doneCb(null, done, errors); }
+                        else { processNext(); }
+                    });
+                })(queue[idx]);
+                idx++;
+            }
+        }
+        processNext();
+    }
+}
+
 // ── 单套描述生成（返回结构化数据）───────────────────────
 export function generateSingleDescription(outfit, cb) {
-    var d = load();
-    var apiCfg = d.apiVision;
+    var meta = loadMeta();
+    var apiCfg = meta.apiVision;
     if (!apiCfg.endpoint || !apiCfg.key || !apiCfg.model) { cb('请先在设置中配置描述API'); return; }
     if (!outfit.imageData) { cb('该穿搭没有图片'); return; }
     // server 模式下图片可能是后端 URL，外部 AI 无法访问，需要先 resolve 为 base64
     resolveImageForExternal(outfit.imageData, function (resolvedUrl) {
         callVisionAPI(apiCfg, { name: outfit.name, dataUrl: resolvedUrl }, apiCfg.prompt, function (err, text) {
+            if (err) { cb(err); return; }
+            var parsed = parseAIResponse(text);
+            if (parsed && parsed.description) {
+                cb(null, { name: parsed.name || '', description: parsed.description });
+            } else {
+                cb(null, { name: '', description: text });
+            }
+        });
+    });
+}
+
+// ── 单个单品描述生成（返回结构化数据）────────────────────
+export function generateSingleAccDescription(acc, cb) {
+    var meta = loadMeta();
+    var apiCfg = meta.apiVision;
+    if (!apiCfg.endpoint || !apiCfg.key || !apiCfg.model) { cb('请先在设置中配置描述API'); return; }
+    if (!acc.imageData) { cb('该单品没有图片'); return; }
+    var prompt = (apiCfg.accPrompt || apiCfg.prompt || '')
+        .replace(/\{\{accCategory\}\}/g, acc.category || '单品');
+    resolveImageForExternal(acc.imageData, function (resolvedUrl) {
+        callVisionAPI(apiCfg, { name: acc.name || '', dataUrl: resolvedUrl }, prompt, function (err, text) {
             if (err) { cb(err); return; }
             var parsed = parseAIResponse(text);
             if (parsed && parsed.description) {

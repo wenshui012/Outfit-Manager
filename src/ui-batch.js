@@ -1,10 +1,10 @@
 // ── 穿搭管理器 · 批量操作与导入导出 ──────────────────────
 // 批量标签、批量导入、批量AI生成、数据导出导入
 
-import { load, save, isServerMode, batchResolveImages, uploadImage, getImageUrlPrefix } from './db.js';
-import { getCharData, getViewOutfits, getViewCategories, getById, getCatNames, getSubCats, SHARED_CHAR_KEY, SHARED_CHAR_LABEL } from './data.js';
+import { load, save, loadMeta, loadCurrent, saveCurrent, loadPartition, savePartition, currentPartKey, currentUserPartKey, syncActivePartitions, charIdByName, isServerMode, batchResolveImages, uploadImage, getImageUrlPrefix } from './db.js';
+import { getCharData, getViewOutfits, getViewCategories, getById, getCatNames, getSubCats, partGetById, partGetAccById, cleanAccIdFromKits, SHARED_CHAR_KEY, SHARED_CHAR_LABEL } from './data.js';
 import { genId, esc, toast, getPopupLayer, compressImage } from './utils.js';
-import { batchGenerateDescriptions } from './api.js';
+import { batchGenerateDescriptions, batchGenerateAccDescriptions } from './api.js';
 import { state, fn } from './bridge.js';
 
 // 需要从 ui-sheets.js 引入的通用函数
@@ -14,6 +14,100 @@ export function initBatchDeps(cs, cls, gats) {
     createSheet = cs;
     closeSheet = cls;
     getAllTagSuggestions = gats;
+}
+
+function cloneJson(v, fallback) {
+    if (v === undefined || v === null) return fallback;
+    return JSON.parse(JSON.stringify(v));
+}
+
+function ensurePartArrays(part) {
+    if (!part) return;
+    if (!Array.isArray(part.outfits)) part.outfits = [];
+    if (!Array.isArray(part.categories)) part.categories = [];
+    if (!Array.isArray(part.activeIds)) part.activeIds = [];
+    if (!Array.isArray(part.accessories)) part.accessories = [];
+    if (!Array.isArray(part.accCategories)) part.accCategories = [];
+}
+
+function mergeCategoryList(target, incoming) {
+    if (!Array.isArray(target)) target = [];
+    (incoming || []).forEach(function (c) {
+        var name = typeof c === 'object' ? c.name : c;
+        var exists = getCatNames(target).indexOf(name) !== -1;
+        if (!exists) target.push(cloneJson(c, c));
+    });
+    return target;
+}
+
+function cloneAccessoryList(accessories, existing) {
+    var used = {};
+    (existing || []).forEach(function (a) { if (a && a.id) used[a.id] = true; });
+    var map = {};
+    var list = [];
+    (accessories || []).forEach(function (a) {
+        if (!a) return;
+        var oldId = a.id || ('a_' + genId().substring(0, 8));
+        var newId = oldId;
+        while (used[newId]) newId = 'a_' + genId().substring(0, 8);
+        used[newId] = true;
+        map[oldId] = newId;
+        var copy = cloneJson(a, {});
+        copy.id = newId;
+        list.push(copy);
+    });
+    return { list: list, map: map };
+}
+
+function remapKitAccIds(outfit, accIdMap) {
+    if (!outfit || !Array.isArray(outfit.kits)) return outfit;
+    outfit.kits.forEach(function (kit) {
+        if (!kit || !Array.isArray(kit.accIds)) return;
+        kit.accIds = kit.accIds.map(function (aid) { return accIdMap[aid] || aid; });
+    });
+    return outfit;
+}
+
+function cloneOutfitForImport(outfit, accIdMap) {
+    var copy = cloneJson(outfit, {});
+    copy.id = genId();
+    return remapKitAccIds(copy, accIdMap || {});
+}
+
+function clearOutfitKits(outfit) {
+    if (!outfit) return outfit;
+    outfit.kits = [];
+    outfit.activeKitId = null;
+    return outfit;
+}
+
+function mergeAccessoriesByName(existing, incoming) {
+    if (!Array.isArray(existing)) existing = [];
+    var map = {};
+    (incoming || []).forEach(function (imp) {
+        if (!imp) return;
+        var oldId = imp.id || '';
+        var found = null;
+        for (var i = 0; i < existing.length; i++) {
+            if (existing[i].name && imp.name && existing[i].name === imp.name
+                && (existing[i].category || '') === (imp.category || '')) {
+                found = existing[i];
+                break;
+            }
+        }
+        if (found) {
+            var keepId = found.id;
+            Object.assign(found, cloneJson(imp, {}), { id: keepId });
+            if (oldId) map[oldId] = keepId;
+        } else {
+            var cloned = cloneAccessoryList([imp], existing);
+            if (cloned.list[0]) {
+                existing.push(cloned.list[0]);
+                if (oldId) map[oldId] = cloned.list[0].id;
+            }
+        }
+    });
+    return map;
 }
 
 // ── 批量标签选择面板 ──────────────────────────────────────
@@ -65,10 +159,9 @@ function openBatchTagPanel(selectedIds, onDone) {
     }
 
     function applyTag(tag) {
-        var dd = load();
-        var vo = getViewOutfits(dd);
-        vo.forEach(function (o) { if (selectedIds.indexOf(o.id) !== -1) o.sceneTag = tag; });
-        save(dd); closeSheet(sheet);
+        var curP = loadCurrent();
+        curP.outfits.forEach(function (o) { if (selectedIds.indexOf(o.id) !== -1) o.sceneTag = tag; });
+        saveCurrent(curP); closeSheet(sheet);
         toast('✅ 已设置标签：' + tag);
         if (onDone) onDone();
     }
@@ -88,10 +181,9 @@ function openBatchTagPanel(selectedIds, onDone) {
 
     // 清除标签
     sheet.querySelector('#om-btag-clear').addEventListener('click', function () {
-        var dd = load();
-        var vo = getViewOutfits(dd);
-        vo.forEach(function (o) { if (selectedIds.indexOf(o.id) !== -1) o.sceneTag = ''; });
-        save(dd); closeSheet(sheet);
+        var curP = loadCurrent();
+        curP.outfits.forEach(function (o) { if (selectedIds.indexOf(o.id) !== -1) o.sceneTag = ''; });
+        saveCurrent(curP); closeSheet(sheet);
         toast('✅ 已清除 ' + count + ' 套穿搭的标签');
         if (onDone) onDone();
     });
@@ -112,20 +204,25 @@ function doExportFile(data, filename) {
 function collectImageUrls(data) {
     var urls = [];
     var prefix = getImageUrlPrefix();
-    function scanOutfits(outfits) {
-        if (!Array.isArray(outfits)) return;
-        outfits.forEach(function (o) {
-            if (o && typeof o.imageData === 'string' && o.imageData.indexOf(prefix) === 0) {
-                urls.push(o.imageData);
+    function scanImageItems(items) {
+        if (!Array.isArray(items)) return;
+        items.forEach(function (item) {
+            if (item && typeof item.imageData === 'string' && item.imageData.indexOf(prefix) === 0) {
+                urls.push(item.imageData);
             }
         });
     }
-    scanOutfits(data.outfits);
+    function scanPartition(part) {
+        if (!part) return;
+        scanImageItems(part.outfits);
+        scanImageItems(part.accessories);
+    }
+    scanPartition(data);
     if (data.chars) {
-        for (var cn in data.chars) { scanOutfits((data.chars[cn] || {}).outfits); }
+        for (var cn in data.chars) { scanPartition(data.chars[cn]); }
     }
     if (Array.isArray(data.presets)) {
-        data.presets.forEach(function (p) { if (p) scanOutfits(p.outfits); });
+        data.presets.forEach(function (p) { scanPartition(p); });
     }
     if (typeof data.fabImage === 'string' && data.fabImage.indexOf(prefix) === 0) {
         urls.push(data.fabImage);
@@ -199,7 +296,7 @@ function exportData() {
 
     document.getElementById('om-exp-user').addEventListener('click', function () {
         _mp.removeChild(modal);
-        doExport({ type: 'user', outfits: d.outfits, categories: d.categories }, 'outfit-mgr-user-' + new Date().toISOString().slice(0, 10) + '.json');
+        doExport({ type: 'user', outfits: d.outfits, categories: d.categories, accessories: d.accessories || [], accCategories: d.accCategories || [] }, 'outfit-mgr-user-' + new Date().toISOString().slice(0, 10) + '.json');
         toast('✅ 已导出 User 穿搭');
     });
 
@@ -207,7 +304,7 @@ function exportData() {
     if (expCharOne) expCharOne.addEventListener('click', function () {
         _mp.removeChild(modal);
         var cd = getCharData(d, d.currentChar);
-        doExport({ type: 'char', charName: d.currentChar, outfits: cd.outfits, categories: cd.categories }, 'outfit-mgr-char-' + d.currentChar + '-' + new Date().toISOString().slice(0, 10) + '.json');
+        doExport({ type: 'char', charName: d.currentChar, outfits: cd.outfits, categories: cd.categories, accessories: cd.accessories || [], accCategories: cd.accCategories || [] }, 'outfit-mgr-char-' + d.currentChar + '-' + new Date().toISOString().slice(0, 10) + '.json');
         toast('✅ 已导出「' + d.currentChar + '」');
     });
 
@@ -216,6 +313,16 @@ function exportData() {
         _mp.removeChild(modal);
         var charExport = { type: 'chars_all', charNames: d.charNames, chars: {} };
         (d.charNames || []).forEach(function (cn) { charExport.chars[cn] = getCharData(d, cn); });
+        if (d.chars && d.chars[SHARED_CHAR_KEY]) {
+            var sc = d.chars[SHARED_CHAR_KEY];
+            charExport.chars[SHARED_CHAR_KEY] = {
+                outfits: sc.outfits || [],
+                categories: sc.categories || [],
+                activeIds: sc.activeIds || [],
+                accessories: sc.accessories || [],
+                accCategories: sc.accCategories || []
+            };
+        }
         doExport(charExport, 'outfit-mgr-all-chars-' + new Date().toISOString().slice(0, 10) + '.json');
         toast('✅ 已导出全部角色（' + d.charNames.length + '个）');
     });
@@ -272,24 +379,29 @@ function resolveImportAssets(imported, cb) {
     if (!assets || typeof assets !== 'object') { cb(); return; }
     var prefix = getImageUrlPrefix();
 
-    function replaceInOutfits(outfits, urlMap) {
-        if (!Array.isArray(outfits)) return;
-        outfits.forEach(function (o) {
-            if (!o || typeof o.imageData !== 'string') return;
-            if (o.imageData.indexOf(prefix) === 0) {
-                var name = o.imageData.replace(prefix, '');
-                if (urlMap[name]) o.imageData = urlMap[name];
+    function replaceInImageItems(items, urlMap) {
+        if (!Array.isArray(items)) return;
+        items.forEach(function (item) {
+            if (!item || typeof item.imageData !== 'string') return;
+            if (item.imageData.indexOf(prefix) === 0) {
+                var name = item.imageData.replace(prefix, '');
+                if (urlMap[name]) item.imageData = urlMap[name];
             }
         });
     }
+    function replaceInPartition(part, urlMap) {
+        if (!part) return;
+        replaceInImageItems(part.outfits, urlMap);
+        replaceInImageItems(part.accessories, urlMap);
+    }
 
     function replaceAll(data, urlMap) {
-        replaceInOutfits(data.outfits, urlMap);
+        replaceInPartition(data, urlMap);
         if (data.chars) {
-            for (var cn in data.chars) { replaceInOutfits((data.chars[cn] || {}).outfits, urlMap); }
+            for (var cn in data.chars) { replaceInPartition(data.chars[cn], urlMap); }
         }
         if (Array.isArray(data.presets)) {
-            data.presets.forEach(function (p) { if (p) replaceInOutfits(p.outfits, urlMap); });
+            data.presets.forEach(function (p) { replaceInPartition(p, urlMap); });
         }
         if (typeof data.fabImage === 'string' && data.fabImage.indexOf(prefix) === 0) {
             var fabName = data.fabImage.replace(prefix, '');
@@ -356,23 +468,64 @@ function processImport(imported, mode) {
 
         if (imported.type === 'char' && imported.charName) {
             var cn = imported.charName;
+            if (cn === SHARED_CHAR_KEY) {
+                if (!dd.chars) dd.chars = {};
+                var srcSharedC = imported.categories || [];
+                var srcSharedAC = imported.accCategories || [];
+                if (mode === 'replace') {
+                    var sharedAccClone = cloneAccessoryList(imported.accessories || [], []);
+                    var sharedSrcO = (imported.outfits || []).map(function (o) { return cloneOutfitForImport(o, sharedAccClone.map); });
+                    dd.chars[SHARED_CHAR_KEY] = { outfits: sharedSrcO, categories: cloneJson(srcSharedC, []), activeIds: [], accessories: sharedAccClone.list, accCategories: cloneJson(srcSharedAC, []) };
+                } else if (mode === 'update') {
+                    var sharedCd0 = getCharData(dd, SHARED_CHAR_KEY);
+                    ensurePartArrays(sharedCd0);
+                    var sharedAccMap0 = mergeAccessoriesByName(sharedCd0.accessories, imported.accessories || []);
+                    var sharedMappedOutfits0 = (imported.outfits || []).map(function (o) { return remapKitAccIds(cloneJson(o, {}), sharedAccMap0); });
+                    mergeByName(sharedCd0.outfits, sharedMappedOutfits0);
+                    sharedCd0.categories = mergeCategoryList(sharedCd0.categories, srcSharedC);
+                    sharedCd0.accCategories = mergeCategoryList(sharedCd0.accCategories, srcSharedAC);
+                } else {
+                    var sharedCd = getCharData(dd, SHARED_CHAR_KEY);
+                    ensurePartArrays(sharedCd);
+                    var sharedAccAppend = cloneAccessoryList(imported.accessories || [], sharedCd.accessories);
+                    sharedAccAppend.list.forEach(function (a) { sharedCd.accessories.push(a); });
+                    sharedCd.accCategories = mergeCategoryList(sharedCd.accCategories, srcSharedAC);
+                    var sharedSrcO2 = (imported.outfits || []).map(function (o) { return cloneOutfitForImport(o, sharedAccAppend.map); });
+                    sharedSrcO2.forEach(function (o) { sharedCd.outfits.push(o); });
+                    sharedCd.categories = mergeCategoryList(sharedCd.categories, srcSharedC);
+                }
+                save(dd); fn.renderViewbar(); fn.renderCatbar(); fn.renderGrid(); fn.renderBottomStatus();
+                toast('✅ 已导入通用衣柜');
+                return;
+            }
             if (!dd.chars) dd.chars = {};
             if (!dd.charNames) dd.charNames = [];
-            var srcO = (imported.outfits || []).map(function (o) { return Object.assign({}, o, { id: genId() }); });
             var srcC = imported.categories || [];
+            var srcAC = imported.accCategories || [];
             if (mode === 'replace') {
-                dd.chars[cn] = { outfits: srcO, categories: srcC, activeIds: [] };
+                var accClone = cloneAccessoryList(imported.accessories || [], []);
+                var srcO = (imported.outfits || []).map(function (o) { return cloneOutfitForImport(o, accClone.map); });
+                dd.chars[cn] = { outfits: srcO, categories: cloneJson(srcC, []), activeIds: [], accessories: accClone.list, accCategories: cloneJson(srcAC, []) };
             } else if (mode === 'update') {
                 var cd0 = getCharData(dd, cn);
-                var r0 = mergeByName(cd0.outfits, imported.outfits || []);
-                srcC.forEach(function (c) { if (cd0.categories.indexOf(c) === -1) cd0.categories.push(c); });
+                ensurePartArrays(cd0);
+                var accMap0 = mergeAccessoriesByName(cd0.accessories, imported.accessories || []);
+                var mappedOutfits0 = (imported.outfits || []).map(function (o) { return remapKitAccIds(cloneJson(o, {}), accMap0); });
+                var r0 = mergeByName(cd0.outfits, mappedOutfits0);
+                cd0.categories = mergeCategoryList(cd0.categories, srcC);
+                cd0.accCategories = mergeCategoryList(cd0.accCategories, srcAC);
                 if (dd.charNames.indexOf(cn) === -1) dd.charNames.push(cn);
                 save(dd); fn.renderViewbar(); fn.renderCatbar(); fn.renderGrid(); fn.renderBottomStatus();
                 toast('✅ 替换同名完成：更新' + r0.updated + '套，新增' + r0.added + '套'); return;
             } else {
                 var cd = getCharData(dd, cn);
+                ensurePartArrays(cd);
+                var accAppend = cloneAccessoryList(imported.accessories || [], cd.accessories);
+                accAppend.list.forEach(function (a) { cd.accessories.push(a); });
+                cd.accCategories = mergeCategoryList(cd.accCategories, srcAC);
+                var srcO = (imported.outfits || []).map(function (o) { return cloneOutfitForImport(o, accAppend.map); });
                 srcO.forEach(function (o) { cd.outfits.push(o); });
-                srcC.forEach(function (c) { if (cd.categories.indexOf(c) === -1) cd.categories.push(c); });
+                cd.categories = mergeCategoryList(cd.categories, srcC);
             }
             if (dd.charNames.indexOf(cn) === -1) dd.charNames.push(cn);
             save(dd); fn.renderViewbar(); fn.renderCatbar(); fn.renderGrid(); fn.renderBottomStatus();
@@ -383,97 +536,151 @@ function processImport(imported, mode) {
         if (imported.type === 'chars_all' && imported.chars) {
             if (!dd.chars) dd.chars = {};
             if (!dd.charNames) dd.charNames = [];
-            var importedNames = imported.charNames || Object.keys(imported.chars);
+            var importedNames = (imported.charNames || Object.keys(imported.chars)).slice();
+            if (imported.chars[SHARED_CHAR_KEY] && importedNames.indexOf(SHARED_CHAR_KEY) === -1) importedNames.push(SHARED_CHAR_KEY);
             var totalOutfits = 0;
             importedNames.forEach(function (cn) {
                 var src = imported.chars[cn]; if (!src) return;
-                var srcO2 = (src.outfits || []).map(function (o) { return Object.assign({}, o, { id: genId() }); });
                 var srcC2 = src.categories || [];
+                var srcAC2 = src.accCategories || [];
                 if (mode === 'replace') {
-                    dd.chars[cn] = { outfits: srcO2, categories: srcC2, activeIds: [] };
+                    var accClone2 = cloneAccessoryList(src.accessories || [], []);
+                    var srcO2 = (src.outfits || []).map(function (o) { return cloneOutfitForImport(o, accClone2.map); });
+                    dd.chars[cn] = { outfits: srcO2, categories: cloneJson(srcC2, []), activeIds: [], accessories: accClone2.list, accCategories: cloneJson(srcAC2, []) };
+                    totalOutfits += srcO2.length;
                 } else if (mode === 'update') {
                     var cd3 = getCharData(dd, cn);
-                    var r3 = mergeByName(cd3.outfits, src.outfits || []);
-                    srcC2.forEach(function (c) { if (cd3.categories.indexOf(c) === -1) cd3.categories.push(c); });
+                    ensurePartArrays(cd3);
+                    var accMap3 = mergeAccessoriesByName(cd3.accessories, src.accessories || []);
+                    var mappedOutfits3 = (src.outfits || []).map(function (o) { return remapKitAccIds(cloneJson(o, {}), accMap3); });
+                    var r3 = mergeByName(cd3.outfits, mappedOutfits3);
+                    cd3.categories = mergeCategoryList(cd3.categories, srcC2);
+                    cd3.accCategories = mergeCategoryList(cd3.accCategories, srcAC2);
                     totalOutfits += r3.updated + r3.added;
                 } else {
                     var cd2 = getCharData(dd, cn);
+                    ensurePartArrays(cd2);
+                    var accAppend2 = cloneAccessoryList(src.accessories || [], cd2.accessories);
+                    accAppend2.list.forEach(function (a) { cd2.accessories.push(a); });
+                    cd2.accCategories = mergeCategoryList(cd2.accCategories, srcAC2);
+                    var srcO2 = (src.outfits || []).map(function (o) { return cloneOutfitForImport(o, accAppend2.map); });
                     srcO2.forEach(function (o) { cd2.outfits.push(o); });
-                    srcC2.forEach(function (c) { if (cd2.categories.indexOf(c) === -1) cd2.categories.push(c); });
+                    cd2.categories = mergeCategoryList(cd2.categories, srcC2);
                     totalOutfits += srcO2.length;
                 }
-                if (dd.charNames.indexOf(cn) === -1) dd.charNames.push(cn);
+                if (cn !== SHARED_CHAR_KEY && dd.charNames.indexOf(cn) === -1) dd.charNames.push(cn);
             });
             save(dd); fn.renderViewbar(); fn.renderCatbar(); fn.renderGrid(); fn.renderBottomStatus();
             toast('✅ 已导入 ' + importedNames.length + ' 个角色（共 ' + totalOutfits + ' 套穿搭）');
             return;
         }
 
-        var srcOutfits = imported.outfits || [], srcCats = imported.categories || [], srcPresets = imported.presets || [];
+        // ── User 穿搭导入：直接写当前 User partition，不经过 save(dd) ──
+        // save(dd) 的 presets 同步会把旧 dd.presets 写回各预设 partition，
+        // 如果当前 activePresetId 指向某个预设，刚导入的数据会被旧快照覆盖。
+        // 所以 User 穿搭导入走 partition API 直接写入。
+        var srcOutfits = imported.outfits || [], srcCats = imported.categories || [];
+        var srcAccessories = imported.accessories || [], srcAccCats = imported.accCategories || [];
+        var userPK = currentUserPartKey();
+        var userPart = loadPartition(userPK);
+        ensurePartArrays(userPart);
+
         if (mode === 'replace') {
-            dd.outfits = srcOutfits.map(function (o) { return Object.assign({}, o, { id: genId() }); });
-            dd.categories = srcCats.slice(); dd.activeIds = [];
+            var userAccClone = cloneAccessoryList(srcAccessories, []);
+            userPart.outfits = srcOutfits.map(function (o) { return cloneOutfitForImport(o, userAccClone.map); });
+            userPart.categories = cloneJson(srcCats, []);
+            userPart.activeIds = [];
+            userPart.accessories = userAccClone.list;
+            userPart.accCategories = cloneJson(srcAccCats, []);
         } else if (mode === 'update') {
-            var ru = mergeByName(dd.outfits, srcOutfits);
-            srcCats.forEach(function (c) { if (dd.categories.indexOf(c) === -1) dd.categories.push(c); });
-            if (srcPresets.length > 0) {
-                if (!Array.isArray(dd.presets)) dd.presets = [];
-                srcPresets.forEach(function (p2) { if (p2) dd.presets.push(Object.assign({}, p2, { id: genId() })); });
-            }
-            // update模式下角色数据也按名称匹配
+            var userAccMap = mergeAccessoriesByName(userPart.accessories, srcAccessories);
+            var mappedUserOutfits = srcOutfits.map(function (o) { return remapKitAccIds(cloneJson(o, {}), userAccMap); });
+            var ru = mergeByName(userPart.outfits, mappedUserOutfits);
+            userPart.categories = mergeCategoryList(userPart.categories, srcCats);
+            userPart.accCategories = mergeCategoryList(userPart.accCategories, srcAccCats);
+            // update模式下角色数据走兼容层
             if (imported.chars) {
-                if (!dd.chars) dd.chars = {};
-                if (!dd.charNames) dd.charNames = [];
+                var dd2 = load();
+                if (!dd2.chars) dd2.chars = {};
+                if (!dd2.charNames) dd2.charNames = [];
                 var impNames2 = imported.charNames || Object.keys(imported.chars);
                 impNames2.forEach(function (cn) {
                     var src3 = imported.chars[cn]; if (!src3) return;
-                    var cd4 = getCharData(dd, cn);
-                    mergeByName(cd4.outfits, src3.outfits || []);
-                    (src3.categories || []).forEach(function (c) { if (cd4.categories.indexOf(c) === -1) cd4.categories.push(c); });
-                    if (dd.charNames.indexOf(cn) === -1) dd.charNames.push(cn);
+                    var cd4 = getCharData(dd2, cn);
+                    ensurePartArrays(cd4);
+                    var accMap4 = mergeAccessoriesByName(cd4.accessories, src3.accessories || []);
+                    var mappedOutfits4 = (src3.outfits || []).map(function (o) { return remapKitAccIds(cloneJson(o, {}), accMap4); });
+                    mergeByName(cd4.outfits, mappedOutfits4);
+                    cd4.categories = mergeCategoryList(cd4.categories, src3.categories || []);
+                    cd4.accCategories = mergeCategoryList(cd4.accCategories, src3.accCategories || []);
+                    if (dd2.charNames.indexOf(cn) === -1) dd2.charNames.push(cn);
                 });
+                save(dd2);
             }
-            save(dd); fn.renderViewbar(); fn.renderCatbar(); fn.renderGrid(); fn.renderBottomStatus(); fn.updateBtn();
+            // 先写 User partition 再刷新
+            savePartition(userPK, userPart);
+            syncActivePartitions(userPK, userPart.activeIds);
+            fn.renderViewbar(); fn.renderCatbar(); fn.renderGrid(); fn.renderBottomStatus(); fn.updateBtn();
             toast('✅ 替换同名完成：更新' + ru.updated + '套，新增' + ru.added + '套');
             return;
         } else {
-            srcOutfits.forEach(function (o) { dd.outfits.push(Object.assign({}, o, { id: genId() })); });
-            srcCats.forEach(function (c) { if (dd.categories.indexOf(c) === -1) dd.categories.push(c); });
-            if (srcPresets.length > 0) {
-                if (!Array.isArray(dd.presets)) dd.presets = [];
-                srcPresets.forEach(function (p2) { if (p2) dd.presets.push(Object.assign({}, p2, { id: genId() })); });
-            }
+            // append 模式
+            var userAccAppend = cloneAccessoryList(srcAccessories, userPart.accessories);
+            userAccAppend.list.forEach(function (a) { userPart.accessories.push(a); });
+            userPart.accCategories = mergeCategoryList(userPart.accCategories, srcAccCats);
+            srcOutfits.forEach(function (o) { userPart.outfits.push(cloneOutfitForImport(o, userAccAppend.map)); });
+            userPart.categories = mergeCategoryList(userPart.categories, srcCats);
         }
 
+        // 写入 User partition
+        savePartition(userPK, userPart);
+        syncActivePartitions(userPK, userPart.activeIds);
+
+        // 预设导入（如果有的话）仍走兼容层
+        var srcPresets = imported.presets || [];
+        if (srcPresets.length > 0) {
+            var dd3 = load();
+            if (!Array.isArray(dd3.presets)) dd3.presets = [];
+            srcPresets.forEach(function (p2) { if (p2) dd3.presets.push(Object.assign({}, p2, { id: genId() })); });
+            save(dd3);
+        }
+
+        // 角色数据导入（replace/append，非 update）走兼容层
         if (mode !== 'update' && imported.chars) {
-            if (!dd.chars) dd.chars = {};
-            if (!dd.charNames) dd.charNames = [];
+            var dd4 = load();
+            if (!dd4.chars) dd4.chars = {};
+            if (!dd4.charNames) dd4.charNames = [];
             var impNames = imported.charNames || Object.keys(imported.chars);
             impNames.forEach(function (cn) {
                 var src2 = imported.chars[cn]; if (!src2) return;
-                dd.chars[cn] = {
-                    outfits: (src2.outfits || []).map(function (o) { return Object.assign({}, o, { id: genId() }); }),
-                    categories: src2.categories || [],
-                    activeIds: []
+                var accClone4 = cloneAccessoryList(src2.accessories || [], []);
+                dd4.chars[cn] = {
+                    outfits: (src2.outfits || []).map(function (o) { return cloneOutfitForImport(o, accClone4.map); }),
+                    categories: cloneJson(src2.categories || [], []),
+                    activeIds: [],
+                    accessories: accClone4.list,
+                    accCategories: cloneJson(src2.accCategories || [], [])
                 };
-                if (dd.charNames.indexOf(cn) === -1) dd.charNames.push(cn);
+                if (dd4.charNames.indexOf(cn) === -1) dd4.charNames.push(cn);
             });
+            save(dd4);
         }
 
-        save(dd); fn.renderViewbar(); fn.renderCatbar(); fn.renderGrid(); fn.renderBottomStatus(); fn.updateBtn();
-        toast('✅ 导入成功：' + dd.outfits.length + ' 套穿搭');
+        fn.renderViewbar(); fn.renderCatbar(); fn.renderGrid(); fn.renderBottomStatus(); fn.updateBtn();
+        toast('✅ 导入成功：' + userPart.outfits.length + ' 套穿搭');
     } catch (err) { toast('导入处理失败：' + err.message, true); }
 }
 
 // ── 批量导入弹窗 ─────────────────────────────────────────
 function openBatchImportModal(files) {
-    var d = load();
+    var curPart = loadCurrent();
+    var meta = loadMeta();
     var curCat = (state.curCat && state.curCat !== '__all__') ? state.curCat : '';
-    var viewCats = getViewCategories(d);
+    var viewCats = curPart.categories || [];
     var catNames = getCatNames(viewCats);
     var catOpts = '<option value="">未分类</option>' +
         catNames.map(function (c) { return '<option value="' + esc(c) + '"' + (c === curCat ? ' selected' : '') + '>' + esc(c) + '</option>'; }).join('');
-    var hasApi = !!(d.apiVision.endpoint && d.apiVision.key && d.apiVision.model);
+    var hasApi = !!(meta.apiVision.endpoint && meta.apiVision.key && meta.apiVision.model);
 
     var modal = document.createElement('div');
     modal.className = 'om-modal';
@@ -519,9 +726,16 @@ function openBatchImportModal(files) {
         var useAI = hasApi && modal.querySelector('#om-bimport-ai') && modal.querySelector('#om-bimport-ai').checked;
         var imported = 0;
         var newIds = [];
+        var importedOutfits = [];
 
         function compressNext(i) {
             if (i >= files.length) {
+                if (importedOutfits.length > 0) {
+                    var finalPart = loadCurrent();
+                    if (!Array.isArray(finalPart.outfits)) finalPart.outfits = [];
+                    finalPart.outfits = importedOutfits.filter(function (o) { return !!o; }).concat(finalPart.outfits);
+                    saveCurrent(finalPart);
+                }
                 delete modal.dataset.running;
                 statusEl.innerHTML = '<div style="color:#4caf50;font-weight:600">✅ 已导入 ' + imported + ' 套穿搭</div>';
                 var actionsEl = modal.querySelector('#om-bimport-actions');
@@ -549,7 +763,6 @@ function openBatchImportModal(files) {
             var reader = new FileReader();
             reader.onload = function (e) {
                 compressImage(e.target.result, function (compressed) {
-                    var dd = load();
                     var id = genId();
                     var newOutfit = {
                         id: id,
@@ -560,12 +773,7 @@ function openBatchImportModal(files) {
                         imageData: compressed,
                         createdAt: Date.now()
                     };
-                    if (dd.currentView === 'char' && dd.currentChar) {
-                        getCharData(dd, dd.currentChar).outfits.push(newOutfit);
-                    } else {
-                        dd.outfits.push(newOutfit);
-                    }
-                    save(dd);
+                    importedOutfits[i] = newOutfit;
                     newIds.push(id);
                     imported++;
                     compressNext(i + 1);
@@ -580,10 +788,11 @@ function openBatchImportModal(files) {
 
 // ── 批量 AI 生成描述弹窗 ──────────────────────────────────
 function openBatchDescModal(ids) {
-    var d = load();
-    var withImg = ids.filter(function (id) { var o = getById(d, id); return o && o.imageData; });
+    var meta = loadMeta();
+    var curP = loadCurrent();
+    var withImg = ids.filter(function (id) { var o = partGetById(curP, id); return o && o.imageData; });
     var skipCount = ids.length - withImg.length;
-    var willSkipDesc = withImg.filter(function (id) { var o = getById(d, id); return o && o.description && o.description.trim() && !d.apiVision.overwrite; }).length;
+    var willSkipDesc = withImg.filter(function (id) { var o = partGetById(curP, id); return o && o.description && o.description.trim() && !meta.apiVision.overwrite; }).length;
     var modal = document.createElement('div');
     modal.className = 'om-modal';
     modal.style.setProperty('z-index', '2147483647', 'important');
@@ -675,6 +884,121 @@ function openBatchDescModal(ids) {
                     } else {
                         toast('👗 AI 生成完成：' + successCount + ' 条描述已就绪');
                     }
+                    fn.renderGrid();
+                }
+            }
+        );
+    });
+}
+
+// ── 单品批量 AI 生成描述弹窗 ─────────────────────────────
+function openAccBatchDescModal(ids) {
+    var meta = loadMeta();
+    var curP = loadCurrent();
+    var missingCat = ids.filter(function (id) {
+        var a = partGetAccById(curP, id);
+        return a && (!a.category || !a.category.trim());
+    }).length;
+    if (missingCat > 0) {
+        toast('请先为单品选择分类，再批量生成描述和名称', true);
+        return;
+    }
+    var withImg = ids.filter(function (id) { var a = partGetAccById(curP, id); return a && a.imageData; });
+    var skipCount = ids.length - withImg.length;
+    var willSkipDesc = withImg.filter(function (id) { var a = partGetAccById(curP, id); return a && a.description && a.description.trim() && !meta.apiVision.overwrite; }).length;
+    var modal = document.createElement('div');
+    modal.className = 'om-modal';
+    modal.style.setProperty('z-index', '2147483647', 'important');
+    modal.innerHTML = '<div class="om-modal-box" style="background:' + (state.darkMode ? '#1e1e24' : '#ececef') + ';color:' + (state.darkMode ? '#eee' : '#111') + '">' +
+        '<div class="om-modal-title"><i class="fa-solid fa-wand-magic-sparkles" style="margin-right:6px;color:var(--SmartThemeQuoteColor,#7c6daf)"></i>AI 批量生成单品描述</div>' +
+        '<div style="font-size:.82em;opacity:.7;margin-bottom:8px">' +
+        '共选中 ' + ids.length + ' 个单品，其中 ' + withImg.length + ' 个有图片' +
+        (skipCount > 0 ? '，' + skipCount + ' 个无图片将跳过' : '') +
+        (willSkipDesc > 0 ? '<br>' + willSkipDesc + ' 个已有描述将跳过（可在设置中开启覆盖）' : '') +
+        '</div>' +
+        '<div style="font-size:.78em;opacity:.5;margin-bottom:8px">共需 ' + (withImg.length - willSkipDesc) + ' 次 API 调用</div>' +
+        '<div style="border:1px solid rgba(127,127,127,.12);border-radius:8px;padding:10px;margin-bottom:8px">' +
+        '<label style="display:flex;align-items:center;gap:6px;font-size:.82em;cursor:pointer"><input type="checkbox" id="om-acc-batch-autoname" checked /> 同时生成单品名称（覆盖现有名称）</label>' +
+        '</div>' +
+        '<div id="om-acc-batch-progress" style="display:none;margin:10px 0">' +
+        '<div style="font-size:.82em;margin-bottom:6px" id="om-acc-batch-prog-text">准备中...</div>' +
+        '<div style="height:6px;background:rgba(127,127,127,.15);border-radius:3px;overflow:hidden">' +
+        '<div id="om-acc-batch-prog-bar" style="height:100%;width:0%;background:var(--SmartThemeQuoteColor,#7c6daf);border-radius:3px;transition:width .3s"></div></div></div>' +
+        '<div id="om-acc-batch-result" style="display:none;margin:8px 0;font-size:.82em;max-height:120px;overflow-y:auto"></div>' +
+        '<div class="om-btn-row" style="margin-top:10px" id="om-acc-batch-actions">' +
+        '<button class="om-btn om-btn-safe" id="om-acc-batch-start"><i class="fa-solid fa-play"></i> 开始生成</button>' +
+        '<button class="om-btn om-btn-outline" id="om-acc-batch-close">取消</button></div></div>';
+
+    var _mp = getPopupLayer();
+    modal.style.cssText = 'position:absolute !important;inset:0 !important;z-index:1 !important;background:rgba(0,0,0,.45) !important;display:flex !important;align-items:center !important;justify-content:center !important;padding:20px !important;box-sizing:border-box !important;pointer-events:auto !important;';
+    _mp.appendChild(modal);
+
+    var modalAlive = true;
+    function removeModal() { if (modalAlive && modal.parentNode) { modal.parentNode.removeChild(modal); modalAlive = false; } }
+
+    modal.addEventListener('click', function (e) { if (e.target === modal) removeModal(); });
+    modal.querySelector('#om-acc-batch-close').addEventListener('click', function () { removeModal(); });
+
+    modal.querySelector('#om-acc-batch-start').addEventListener('click', function () {
+        modal.querySelector('#om-acc-batch-progress').style.display = 'block';
+        modal.querySelector('#om-acc-batch-start').disabled = true;
+        modal.querySelector('#om-acc-batch-start').textContent = '生成中...';
+        var closeBtn = modal.querySelector('#om-acc-batch-close');
+        closeBtn.textContent = '后台运行';
+        closeBtn.onclick = function () {
+            removeModal();
+            toast('AI 正在生成单品描述，可继续使用酒馆，完成后会通知');
+        };
+
+        var options = {
+            autoName: modal.querySelector('#om-acc-batch-autoname').checked
+        };
+
+        batchGenerateAccDescriptions(ids, options,
+            function (done, total, msg) {
+                var pct = total > 0 ? Math.round(done / total * 100) : 0;
+                if (modalAlive) {
+                    var bar = modal.querySelector('#om-acc-batch-prog-bar');
+                    var txt = modal.querySelector('#om-acc-batch-prog-text');
+                    if (bar) bar.style.width = pct + '%';
+                    if (txt) txt.textContent = done + '/' + total + ' ' + msg;
+                }
+            },
+            function (err, doneCount, errors) {
+                var successCount = (doneCount || 0) - (errors ? errors.length : 0);
+                var failCount = errors ? errors.length : 0;
+
+                if (modalAlive) {
+                    var bar = modal.querySelector('#om-acc-batch-prog-bar');
+                    if (bar) bar.style.width = '100%';
+                    var resultEl = modal.querySelector('#om-acc-batch-result');
+                    resultEl.style.display = 'block';
+                    if (err && !doneCount) {
+                        resultEl.innerHTML = '<div style="color:#e57373"><i class="fa-solid fa-circle-exclamation"></i> ' + esc(err) + '</div>';
+                    } else {
+                        var html2 = '<div style="color:#4caf50;font-weight:600">成功生成 ' + successCount + ' 条</div>';
+                        if (failCount > 0) {
+                            html2 += '<div style="color:#ff8c42;margin-top:4px">' + failCount + ' 个失败：</div>';
+                            errors.forEach(function (e) {
+                                html2 += '<div style="opacity:.6;font-size:.9em;margin-left:8px">· ' + esc(e.name) + '：' + esc(e.error) + '</div>';
+                            });
+                        }
+                        resultEl.innerHTML = html2;
+                    }
+                    var actionsEl = modal.querySelector('#om-acc-batch-actions');
+                    actionsEl.innerHTML = '<button class="om-btn om-btn-safe" id="om-acc-batch-done">完成</button>';
+                    modal.querySelector('#om-acc-batch-done').addEventListener('click', function () {
+                        removeModal();
+                        if (fn.renderAccCatbar) fn.renderAccCatbar();
+                        fn.renderGrid();
+                    });
+                } else {
+                    if (failCount > 0) {
+                        toast('AI 单品描述生成完成：' + successCount + ' 成功，' + failCount + ' 失败');
+                    } else {
+                        toast('AI 单品描述生成完成：' + successCount + ' 条描述已就绪');
+                    }
+                    if (fn.renderAccCatbar) fn.renderAccCatbar();
                     fn.renderGrid();
                 }
             }
@@ -880,11 +1204,13 @@ function executeMove(selectedIds, targetType, targetChar, presetIdx, targetCat, 
         var p = dd.presets[presetIdx];
         if (!p) { toast('预设不存在', true); return; }
         if (!p.outfits) p.outfits = [];
+        var samePresetPartition = dd.currentView !== 'char' && p.id === dd.activePresetId;
         sourceOutfits.forEach(function (o) {
             var copy = JSON.parse(JSON.stringify(o));
             copy.id = genId();
             copy.category = targetCat;
             copy.subCategory = targetSub || '';
+            if (!samePresetPartition) clearOutfitKits(copy);
             p.outfits.push(copy);
         });
         save(dd);
@@ -904,6 +1230,7 @@ function executeMove(selectedIds, targetType, targetChar, presetIdx, targetCat, 
             copy.id = genId();
             copy.category = targetCat;
             copy.subCategory = targetSub || '';
+            if (!isCurrentView) clearOutfitKits(copy);
             targetOutfits2.push(copy);
         });
         save(dd);
@@ -936,6 +1263,7 @@ function executeMove(selectedIds, targetType, targetChar, presetIdx, targetCat, 
         sourceOutfits.forEach(function (o) {
             o.category = targetCat;
             o.subCategory = targetSub || '';
+            clearOutfitKits(o);
             targetOutfits.push(o);
         });
 
@@ -947,15 +1275,252 @@ function executeMove(selectedIds, targetType, targetChar, presetIdx, targetCat, 
     if (onDone) onDone();
 }
 
+// ── 单品移动 / 复制 ──────────────────────────────────────
+function openAccMoveToPanel(accIds, onDone) {
+    accIds = (accIds || []).slice();
+    if (accIds.length === 0) { toast('请先选择单品', true); return; }
+    var sourcePartKey = currentPartKey();
+    var sourcePart = loadPartition(sourcePartKey);
+    var sourceAccs = accIds.map(function (id) { return partGetAccById(sourcePart, id); }).filter(function (a) { return !!a; });
+    if (sourceAccs.length === 0) { toast('未找到单品', true); return; }
+
+    var d = load();
+    var isCopy = false;
+    var isCharView = d.currentView === 'char' && d.currentChar;
+    var currentLabel = isCharView ? (d.currentChar === SHARED_CHAR_KEY ? SHARED_CHAR_LABEL : d.currentChar) : 'User';
+
+    var html = '<div class="om-sheet-title"><i class="fa-solid fa-arrow-right-arrow-left"></i>移动 / 复制</div>';
+    html += '<div class="om-hint" style="margin-bottom:10px">' + sourceAccs.length + ' 件单品 · 来自：' + esc(currentLabel) + '</div>';
+    html += '<div class="om-move-toggle">' +
+        '<button class="om-move-toggle-btn on" data-mode="move"><i class="fa-solid fa-arrow-right-arrow-left"></i> 移动</button>' +
+        '<button class="om-move-toggle-btn" data-mode="copy"><i class="fa-regular fa-copy"></i> 复制</button></div>';
+    html += '<div class="om-divider" style="margin:10px 0"></div>';
+    html += '<div class="om-cat-item om-acc-move-type" data-type="user" style="cursor:pointer;padding:14px"><i class="fa-solid fa-user" style="opacity:.45;width:22px;text-align:center;margin-right:8px"></i><span class="om-cat-name" style="font-weight:600;font-size:1em">User 衣柜</span></div>';
+    html += '<div class="om-cat-item om-acc-move-type" data-type="char" style="cursor:pointer;padding:14px"><i class="fa-solid fa-masks-theater" style="opacity:.45;width:22px;text-align:center;margin-right:8px"></i><span class="om-cat-name" style="font-weight:600;font-size:1em">角色衣柜</span></div>';
+    if (Array.isArray(d.presets) && d.presets.length > 0) {
+        html += '<div class="om-divider" style="margin:10px 0"></div>';
+        html += '<div class="om-cat-item om-acc-move-type" data-type="preset" style="cursor:pointer;padding:14px"><i class="fa-solid fa-bookmark" style="opacity:.45;width:22px;text-align:center;margin-right:8px"></i><span class="om-cat-name" style="font-weight:600;font-size:1em">复制到预设</span></div>';
+    }
+
+    var sheet = createSheet(html);
+    sheet.querySelectorAll('.om-move-toggle-btn').forEach(function (btn) {
+        btn.addEventListener('click', function () {
+            isCopy = btn.dataset.mode === 'copy';
+            sheet.querySelectorAll('.om-move-toggle-btn').forEach(function (b) { b.classList.toggle('on', b === btn); });
+        });
+    });
+    sheet.querySelectorAll('.om-acc-move-type').forEach(function (row) {
+        row.addEventListener('click', function () {
+            closeSheet(sheet);
+            openAccMoveDetailSheet(sourceAccs, sourcePartKey, row.dataset.type, isCopy, onDone);
+        });
+    });
+}
+
+function openAccMoveDetailSheet(sourceAccs, sourcePartKey, type, isCopy, onDone) {
+    var d = load();
+    var count = sourceAccs.length;
+    var exp = {};
+    var actionWord = isCopy ? '复制' : '移动';
+
+    function doAction(targetType, targetChar, presetIdx, targetCat, targetSub) {
+        closeSheet(sheet);
+        executeAccMove(sourceAccs, sourcePartKey, targetType, targetChar, presetIdx, targetCat, targetSub, isCopy, onDone);
+    }
+
+    function buildCatTree(cats, indent) {
+        var h = '';
+        h += '<div class="om-acc-leaf" data-cat="" data-sub="" style="padding-left:' + indent + 'px;opacity:.55">不设分类</div>';
+        (cats || []).forEach(function (catObj) {
+            var catName = typeof catObj === 'object' ? catObj.name : catObj;
+            var children = typeof catObj === 'object' ? (catObj.children || []) : [];
+            if (children.length > 0) {
+                var isOpen = exp['cat_' + catName];
+                h += '<div class="om-acc-row om-acc-cat-toggle" data-key="cat_' + esc(catName) + '" style="padding-left:' + (indent - 4) + 'px"><i class="fa-solid fa-chevron-right om-acc-arrow' + (isOpen ? ' open' : '') + '"></i><span style="font-weight:600">' + esc(catName) + '</span></div>';
+                if (isOpen) {
+                    h += '<div class="om-acc-leaf" data-cat="' + esc(catName) + '" data-sub="" style="padding-left:' + (indent + 16) + 'px">全部' + esc(catName) + '</div>';
+                    children.forEach(function (sc) {
+                        h += '<div class="om-acc-leaf" data-cat="' + esc(catName) + '" data-sub="' + esc(sc) + '" style="padding-left:' + (indent + 16) + 'px"><i class="fa-solid fa-turn-up fa-rotate-90" style="font-size:.55em;opacity:.25;margin-right:5px"></i>' + esc(sc) + '</div>';
+                    });
+                }
+            } else {
+                h += '<div class="om-acc-leaf" data-cat="' + esc(catName) + '" data-sub="" style="padding-left:' + indent + 'px">' + esc(catName) + '</div>';
+            }
+        });
+        return h;
+    }
+
+    function render() {
+        var dd = load();
+        var h = '';
+        if (type === 'user') {
+            var up = loadPartition(currentUserPartKey());
+            h += buildCatTree(up.accCategories || [], 16);
+        } else if (type === 'char') {
+            var shCd = getCharData(dd, SHARED_CHAR_KEY);
+            var shOpen = exp[SHARED_CHAR_KEY];
+            h += '<div class="om-acc-row om-acc-char" data-cn="' + SHARED_CHAR_KEY + '"><i class="fa-solid fa-chevron-right om-acc-arrow' + (shOpen ? ' open' : '') + '"></i><i class="fa-solid fa-globe" style="opacity:.45;margin-right:5px"></i>' + SHARED_CHAR_LABEL + '</div>';
+            if (shOpen) h += buildCatTree(shCd.accCategories || [], 36);
+            (dd.charNames || []).forEach(function (cn) {
+                var cd = getCharData(dd, cn);
+                var cOpen = exp[cn];
+                h += '<div class="om-acc-row om-acc-char" data-cn="' + esc(cn) + '"><i class="fa-solid fa-chevron-right om-acc-arrow' + (cOpen ? ' open' : '') + '"></i><i class="fa-solid fa-masks-theater" style="opacity:.45;margin-right:5px"></i>' + esc(cn) + '</div>';
+                if (cOpen) h += buildCatTree(cd.accCategories || [], 36);
+            });
+        } else if (type === 'preset') {
+            (dd.presets || []).forEach(function (p, pi) {
+                if (!p) return;
+                var pOpen = exp['p_' + pi];
+                h += '<div class="om-acc-row om-acc-preset" data-pidx="' + pi + '"><i class="fa-solid fa-chevron-right om-acc-arrow' + (pOpen ? ' open' : '') + '"></i><i class="fa-solid fa-bookmark" style="opacity:.45;margin-right:5px"></i>' + esc(p.name || '预设' + (pi + 1)) + ' <span style="opacity:.4;font-size:.85em">' + (p.accessories ? p.accessories.length : 0) + '件</span></div>';
+                if (pOpen) h += buildCatTree((p && p.accCategories) || [], 36);
+            });
+        }
+        return h;
+    }
+
+    function refresh() {
+        var scrollEl = sheet.querySelector('.om-sheet-scroll');
+        var scrollTop = scrollEl ? scrollEl.scrollTop : 0;
+        var body = sheet.querySelector('.om-acc-body');
+        if (body) body.innerHTML = render();
+        bindEvents();
+        if (scrollEl) scrollEl.scrollTop = scrollTop;
+    }
+
+    function bindEvents() {
+        var content = sheet.querySelector('.om-sheet-scroll') || sheet;
+        content.querySelectorAll('.om-acc-char').forEach(function (row) {
+            row.addEventListener('click', function () { exp[row.dataset.cn] = !exp[row.dataset.cn]; refresh(); });
+        });
+        content.querySelectorAll('.om-acc-preset').forEach(function (row) {
+            row.addEventListener('click', function () { var k = 'p_' + row.dataset.pidx; exp[k] = !exp[k]; refresh(); });
+        });
+        content.querySelectorAll('.om-acc-cat-toggle').forEach(function (row) {
+            row.addEventListener('click', function () { exp[row.dataset.key] = !exp[row.dataset.key]; refresh(); });
+        });
+        content.querySelectorAll('.om-acc-leaf').forEach(function (leaf) {
+            leaf.addEventListener('click', function () {
+                var cat = leaf.dataset.cat || '';
+                var sub = leaf.dataset.sub || '';
+                if (type === 'user') {
+                    doAction('user', '', -1, cat, sub);
+                } else if (type === 'char') {
+                    var charName = '';
+                    var prev = leaf.previousElementSibling;
+                    while (prev) {
+                        if (prev.classList.contains('om-acc-char') && exp[prev.dataset.cn]) { charName = prev.dataset.cn; break; }
+                        prev = prev.previousElementSibling;
+                    }
+                    if (charName) doAction('char', charName, -1, cat, sub);
+                } else if (type === 'preset') {
+                    var pidx = -1;
+                    var prev2 = leaf.previousElementSibling;
+                    while (prev2) {
+                        if (prev2.classList.contains('om-acc-preset') && exp['p_' + prev2.dataset.pidx]) { pidx = parseInt(prev2.dataset.pidx); break; }
+                        prev2 = prev2.previousElementSibling;
+                    }
+                    if (pidx >= 0) doAction('preset', '', pidx, cat, sub);
+                }
+            });
+        });
+    }
+
+    var titleIcon = type === 'user' ? 'fa-user' : type === 'char' ? 'fa-masks-theater' : 'fa-bookmark';
+    var titleText = type === 'user' ? (actionWord + '到 User 衣柜') : type === 'char' ? (actionWord + '到角色衣柜') : '复制到预设';
+
+    var sheet = createSheet(
+        '<div class="om-sheet-title"><i class="fa-solid ' + titleIcon + '"></i>' + titleText + '</div>' +
+        '<div class="om-hint" style="margin-bottom:8px">' + count + ' 件单品</div>' +
+        '<div class="om-acc-body">' + render() + '</div>'
+    );
+    bindEvents();
+}
+
+function executeAccMove(sourceAccs, sourcePartKey, targetType, targetChar, presetIdx, targetCat, targetSub, isCopy, onDone) {
+    var count = sourceAccs.length;
+    var meta = loadMeta();
+    var targetPartKey = '';
+    var targetLabel = '目标衣柜';
+    var effectiveCopy = isCopy || targetType === 'preset';
+
+    if (targetType === 'user') {
+        targetPartKey = currentUserPartKey();
+        targetLabel = 'User';
+    } else if (targetType === 'char' && targetChar) {
+        if (targetChar === SHARED_CHAR_KEY) {
+            targetPartKey = 'char:' + SHARED_CHAR_KEY;
+            targetLabel = SHARED_CHAR_LABEL;
+        } else {
+            var cid = charIdByName(targetChar);
+            if (cid) targetPartKey = 'char:' + cid;
+            targetLabel = targetChar;
+        }
+    } else if (targetType === 'preset') {
+        var p = (meta.presets || [])[presetIdx];
+        if (p) {
+            targetPartKey = p.partKey;
+            targetLabel = p.name || '预设';
+        }
+    }
+
+    if (!targetPartKey) { toast('目标衣柜不存在', true); return; }
+    var samePartition = sourcePartKey === targetPartKey;
+
+    if (samePartition && !effectiveCopy) {
+        var samePart = loadPartition(sourcePartKey);
+        sourceAccs.forEach(function (src) {
+            var acc = partGetAccById(samePart, src.id);
+            if (acc) {
+                acc.category = targetCat;
+                acc.subCategory = targetSub || '';
+            }
+        });
+        savePartition(sourcePartKey, samePart);
+        toast('已更新 ' + count + ' 件单品分类');
+        if (onDone) onDone();
+        return;
+    }
+
+    var targetPart = loadPartition(targetPartKey);
+    if (!Array.isArray(targetPart.accessories)) targetPart.accessories = [];
+    var usedIds = {};
+    targetPart.accessories.forEach(function (acc) { if (acc && acc.id) usedIds[acc.id] = true; });
+    sourceAccs.forEach(function (src) {
+        var copy = JSON.parse(JSON.stringify(src));
+        do { copy.id = 'a_' + genId().substring(0, 8); } while (usedIds[copy.id]);
+        usedIds[copy.id] = true;
+        copy.category = targetCat;
+        copy.subCategory = targetSub || '';
+        targetPart.accessories.push(copy);
+    });
+    savePartition(targetPartKey, targetPart);
+
+    if (!effectiveCopy) {
+        var sourcePart = loadPartition(sourcePartKey);
+        var sourceIds = sourceAccs.map(function (a) { return a.id; });
+        sourcePart.accessories = (sourcePart.accessories || []).filter(function (a) { return sourceIds.indexOf(a.id) === -1; });
+        sourceIds.forEach(function (id) { cleanAccIdFromKits(sourcePart, id); });
+        if (state.kitFocusPartKey === sourcePartKey) {
+            state.kitDraftAccIds = (state.kitDraftAccIds || []).filter(function (id) { return sourceIds.indexOf(id) === -1; });
+        }
+        savePartition(sourcePartKey, sourcePart);
+    }
+
+    toast((effectiveCopy ? '已复制 ' : '已移动 ') + count + ' 件单品到「' + targetLabel + '」');
+    if (onDone) onDone();
+}
+
 // ── 导出 ──────────────────────────────────────────────────
-export { openBatchDescModal, openBatchTagPanel, openBatchImportModal, openMoveToPanel };
+export { openBatchDescModal, openAccBatchDescModal, openBatchTagPanel, openBatchImportModal, openMoveToPanel, openAccMoveToPanel };
 export { exportData, importData, processImport };
 
 export function registerBatchFn() {
     fn.openBatchDescModal = openBatchDescModal;
+    fn.openAccBatchDescModal = openAccBatchDescModal;
     fn.openBatchTagPanel = openBatchTagPanel;
     fn.openBatchImportModal = openBatchImportModal;
     fn.openMoveToPanel = openMoveToPanel;
+    fn.openAccMoveToPanel = openAccMoveToPanel;
     fn.exportData = exportData;
     fn.importData = importData;
 }

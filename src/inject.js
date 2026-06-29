@@ -1,8 +1,9 @@
-// ── 穿搭管理器 · 注入核心 ──────────────────────────────────
+// ── 穿搭管理器 · 注入核心 v2 ────────────────────────────────
 // fetch/XHR 拦截 + 穿搭信息注入到 AI 请求
+// v2: 使用 loadMeta() + loadActivePartitions() 代替旧 load() 全量读取
 
-import { load } from './db.js';
-import { getById, SHARED_CHAR_KEY } from './data.js';
+import { loadMeta, loadActivePartitions, currentUserPartKey, charNameById } from './db.js';
+import { SHARED_CHAR_KEY, partGetById, getActiveKit, getKitAccessories } from './data.js';
 import { toast } from './utils.js';
 import { state } from './bridge.js';
 
@@ -113,26 +114,54 @@ function injectImageBlocks(p, ownerImageGroups, imgPrompt, multiImgPrompt) {
     }
 }
 
-// ── 请求体注入逻辑 ─────────────────────────────────────
+// ── 请求体注入逻辑（v2：基于 meta + activePartitions）──
 function tryInjectBody(bodyStr) {
     var p; try { p = JSON.parse(bodyStr); } catch (e) { return null; }
     if (!p || (!p.messages && p.prompt === undefined)) return null;
-    var d = load();
-    var pos = d.injectPosition || 'user';
-    var useImg = (d.mode === 'image' || d.mode === 'both');
-    var useText = (d.mode === 'text' || d.mode === 'both');
 
-    // 收集所有owner及其激活穿搭
+    var meta = loadMeta();
+    var pos = meta.injectPosition || 'user';
+    var useImg = (meta.mode === 'image' || meta.mode === 'both');
+    var useText = (meta.mode === 'text' || meta.mode === 'both');
+
+    // 获取所有有激活穿搭的 partition（已预加载，同步读取）
+    var activeParts = loadActivePartitions();
+    // activeParts = { 'user:p_xxx': {outfits,categories,activeIds}, 'char:c_xxx': {...}, ... }
+
+    if (Object.keys(activeParts).length === 0) return null;
+
+    // 收集所有 owner 及其激活穿搭
     var owners = [];
-    var userOutfits = [];
-    (d.activeIds || []).forEach(function (id) { for (var i = 0; i < d.outfits.length; i++) { if (d.outfits[i].id === id) { userOutfits.push(d.outfits[i]); break; } } });
-    if (userOutfits.length > 0) owners.push({ name: 'User', outfits: userOutfits, tplSingle: d.singleTemplate, tplMulti: d.multiTemplate });
+
+    // ── User 穿搭 ──
+    var curUserPK = currentUserPartKey();
+    if (activeParts[curUserPK]) {
+        var userPart = activeParts[curUserPK];
+        var userOutfits = [];
+        (userPart.activeIds || []).forEach(function (id) {
+            var o = partGetById(userPart, id);
+            if (o) userOutfits.push(o);
+        });
+        if (userOutfits.length > 0) {
+            owners.push({
+                name: 'User',
+                outfits: userOutfits,
+                partition: userPart,
+                tplSingle: meta.singleTemplate,
+                tplMulti: meta.multiTemplate
+            });
+        }
+    }
 
     // ── 角色衣柜：通用 vs 单人互斥 ──
     var sharedOutfits = [];
-    if (d.chars && d.chars[SHARED_CHAR_KEY]) {
-        var scd = d.chars[SHARED_CHAR_KEY];
-        (scd.activeIds || []).forEach(function (id) { for (var k = 0; k < (scd.outfits || []).length; k++) { if (scd.outfits[k].id === id) { sharedOutfits.push(scd.outfits[k]); break; } } });
+    var sharedPartKey = 'char:' + SHARED_CHAR_KEY;
+    if (activeParts[sharedPartKey]) {
+        var sharedPart = activeParts[sharedPartKey];
+        (sharedPart.activeIds || []).forEach(function (id) {
+            var o = partGetById(sharedPart, id);
+            if (o) sharedOutfits.push(o);
+        });
     }
 
     if (sharedOutfits.length > 0) {
@@ -140,23 +169,73 @@ function tryInjectBody(bodyStr) {
         var charName2 = '';
         try { charName2 = SillyTavern.getContext().name2 || ''; } catch (e) {}
         if (charName2) {
-            owners.push({ name: charName2, outfits: sharedOutfits, tplSingle: d.charSingleTemplate, tplMulti: d.charMultiTemplate });
+            owners.push({
+                name: charName2,
+                outfits: sharedOutfits,
+                partition: activeParts[sharedPartKey],
+                tplSingle: meta.charSingleTemplate,
+                tplMulti: meta.charMultiTemplate
+            });
         }
-    } else if (d.chars) {
-        // 通用衣柜无激活 → 使用单人衣柜
-        for (var cn in d.chars) {
-            if (cn === SHARED_CHAR_KEY) continue;
-            var cd = d.chars[cn];
-            var cos = [];
-            (cd.activeIds || []).forEach(function (id) { for (var k = 0; k < (cd.outfits || []).length; k++) { if (cd.outfits[k].id === id) { cos.push(cd.outfits[k]); break; } } });
-            if (cos.length > 0) owners.push({ name: cn, outfits: cos, tplSingle: d.charSingleTemplate, tplMulti: d.charMultiTemplate });
+    } else {
+        // 通用衣柜无激活 → 遍历各角色 partition
+        for (var pk in activeParts) {
+            // 跳过 user:* 和 shared
+            if (pk.indexOf('char:') !== 0) continue;
+            if (pk === sharedPartKey) continue;
+
+            var charPart = activeParts[pk];
+            var charOutfits = [];
+            (charPart.activeIds || []).forEach(function (id) {
+                var o = partGetById(charPart, id);
+                if (o) charOutfits.push(o);
+            });
+            if (charOutfits.length > 0) {
+                // 从 partKey 提取 charId，查角色名
+                var charId = pk.substring(5); // 'char:'.length = 5
+                var ownerName = charNameById(charId) || charId;
+                owners.push({
+                    name: ownerName,
+                    outfits: charOutfits,
+                    partition: charPart,
+                    tplSingle: meta.charSingleTemplate,
+                    tplMulti: meta.charMultiTemplate
+                });
+            }
         }
     }
 
     if (owners.length === 0) return null;
 
+    // ── 组装注入内容（v2 + 单品支持）──
     var allTextParts = [];
     var ownerImageGroups = [];
+
+    // 单品描述拼接辅助：按单品 category 排序后拼接
+    function buildAccText(partition, outfit) {
+        var kit = getActiveKit(outfit);
+        if (!kit) return '';
+        var accs = getKitAccessories(partition, kit);
+        var disabled = Array.isArray(kit.disabledAccIds) ? kit.disabledAccIds : [];
+        if (disabled.length > 0) {
+            accs = accs.filter(function (acc) { return disabled.indexOf(acc.id) === -1; });
+        }
+        if (accs.length === 0) return '';
+        // 按 category 字母排序保证注入顺序固定
+        accs.sort(function (a, b) {
+            var ca = (a.category || '').toLowerCase();
+            var cb = (b.category || '').toLowerCase();
+            if (ca < cb) return -1;
+            if (ca > cb) return 1;
+            return 0;
+        });
+        var lines = accs.map(function (acc) {
+            var label = acc.category ? acc.category : '单品';
+            var desc = (acc.description && acc.description.trim()) ? acc.description.trim() : '';
+            return desc ? '[' + label + '] ' + desc : '';
+        }).filter(function (l) { return l !== ''; });
+        return lines.length > 0 ? '\n' + lines.join('\n') : '';
+    }
 
     owners.forEach(function (ow) {
         var active = ow.outfits;
@@ -166,7 +245,8 @@ function tryInjectBody(bodyStr) {
             var lines = active.map(function (o, i) {
                 var scene = o.sceneTag ? '【场景：' + o.sceneTag + '】' : '';
                 var desc = (o.description && o.description.trim()) ? o.description.trim() : '';
-                return '[穿搭' + (i + 1) + '] ' + scene + (desc ? '\n' + desc : '');
+                var accText = buildAccText(ow.partition, o);
+                return '[穿搭' + (i + 1) + '] ' + scene + (desc ? '\n' + desc : '') + accText;
             });
             if (useText) {
                 var wt = (ow.tplMulti || '[服装信息]\n{{charName}}的穿搭：\n{{wardrobe}}')
@@ -182,10 +262,12 @@ function tryInjectBody(bodyStr) {
             var o = active[0];
             if (useText) {
                 var desc2 = (o.description && o.description.trim()) ? o.description.trim() : '';
-                if (desc2) {
+                var accText2 = buildAccText(ow.partition, o);
+                if (desc2 || accText2) {
+                    var fullDesc = desc2 + accText2;
                     var st = (ow.tplSingle || '[服装信息]\n{{charName}}当前穿着：\n{{description}}')
                         .replace(/\{\{charName\}\}/g, ow.name)
-                        .replace('{{description}}', desc2);
+                        .replace('{{description}}', fullDesc);
                     allTextParts.push(st);
                 }
             }
@@ -207,15 +289,15 @@ function tryInjectBody(bodyStr) {
     }
 
     if (ownerImageGroups.length > 0) {
-        var imgPrompt = d.imagePrompt || '';
-        var multiImgPrompt = d.multiImagePrompt || '';
+        var imgPrompt = meta.imagePrompt || '';
+        var multiImgPrompt = meta.multiImagePrompt || '';
         injectImageBlocks(p, ownerImageGroups, imgPrompt, multiImgPrompt);
         injected = true;
     }
 
-    if (d.debug) {
+    if (meta.debug) {
         var summary = owners.map(function (ow) { return ow.name + ':' + ow.outfits.length + '套'; }).join(' + ');
-        toast('👗 ' + summary + ' [' + d.mode + '|' + pos + ']');
+        toast('👗 ' + summary + ' [' + meta.mode + '|' + pos + ']');
     }
 
     return injected ? JSON.stringify(p) : null;
@@ -223,6 +305,10 @@ function tryInjectBody(bodyStr) {
 
 // ── 安装拦截器 ─────────────────────────────────────────
 export function setupInjection() {
+    // 防止重复安装（热重载等场景）
+    if (window.__omInjectionInstalled) return;
+    window.__omInjectionInstalled = true;
+
     var origFetch = window.fetch;
     window.fetch = function (input, init) {
         try {
