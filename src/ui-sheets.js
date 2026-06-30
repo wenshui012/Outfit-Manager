@@ -1,7 +1,7 @@
 // ── 穿搭管理器 · 弹出面板 ──────────────────────────────────
 // 操作菜单、编辑面板、预设、设置、分类管理、Lightbox、导入导出、批量描述
 
-import { load, save, loadMeta, saveMeta, loadCurrent, saveCurrent, loadPartition, savePartition, currentPartKey, syncActivePartitions, charNameById, isServerMode } from './db.js';
+import { load, save, loadMeta, saveMeta, loadCurrent, saveCurrent, loadPartition, savePartition, currentPartKey, syncActivePartitions, charNameById, isServerMode, uploadImage } from './db.js';
 import { def, getCharData, getViewOutfits, getViewCategories, getViewActiveIds, setViewActiveIds, getById, getViewById, isActive, getCatNames, getSubCats, findCatObj, hasSubCats, partGetById, partIsActive, partGetAccById, cleanAccIdFromKits, getActiveKit, getKitAccessories, ensureOutfitKits, SHARED_CHAR_KEY, SHARED_CHAR_LABEL } from './data.js';
 import { genId, esc, toast, getPopupLayer, compressImage } from './utils.js';
 import { generateSingleDescription, generateSingleAccDescription, batchGenerateDescriptions, openModelPicker, normalizeEndpoint } from './api.js';
@@ -1502,7 +1502,8 @@ function openAccBatchImportModal(files, defaultCat, defaultSubCat) {
     files = (files || []).filter(function (f) { return f && f.type && f.type.indexOf('image') === 0; });
     if (files.length === 0) { toast('未选择图片', true); return; }
 
-    var curP = loadCurrent();
+    var targetPartKey = currentPartKey();
+    var curP = loadPartition(targetPartKey);
     var meta = loadMeta();
     var cats = curP.accCategories || [];
     var catNames = getCatNames(cats);
@@ -1557,7 +1558,7 @@ function openAccBatchImportModal(files, defaultCat, defaultSubCat) {
             subSel.innerHTML = '<option value="">无子分类</option>';
             return;
         }
-        var cp = loadCurrent();
+        var cp = loadPartition(targetPartKey);
         var subs = getSubCats(cp.accCategories || [], parentVal);
         subSel.innerHTML = '<option value="">无子分类</option>' +
             subs.map(function (sc) { return '<option value="' + esc(sc) + '">' + esc(sc) + '</option>'; }).join('');
@@ -1582,26 +1583,60 @@ function openAccBatchImportModal(files, defaultCat, defaultSubCat) {
         var statusEl = modal.querySelector('#om-acc-bimport-status');
         statusEl.style.display = 'block';
 
-        var pending = files.length;
-        var baseCount = (loadCurrent().accessories || []).length;
+        var baseCount = (loadPartition(targetPartKey).accessories || []).length;
         var importedAccs = [];
         var newIds = [];
+
+        function prepareImageForStorage(compressed, idx, cb) {
+            if (!isServerMode()) { cb(null, compressed); return; }
+            statusEl.textContent = '上传中... ' + (idx + 1) + '/' + files.length;
+            uploadImage(compressed, function (err, imageData) {
+                if (err || !imageData || imageData.indexOf('data:image/') === 0) {
+                    cb('图片上传失败/后端写入失败');
+                    return;
+                }
+                cb(null, imageData);
+            });
+        }
+
+        function showImportFailure(msg) {
+            var text = msg || '保存失败/空间不足/后端写入失败';
+            delete modal.dataset.running;
+            statusEl.innerHTML = '<div style="color:#e57373">' + esc(text) + '</div>';
+            toast(text, true);
+            modal.querySelector('#om-acc-bimport-start').disabled = false;
+            modal.querySelector('#om-acc-bimport-start').textContent = '重新导入';
+            modal.querySelector('#om-acc-bimport-close').textContent = '取消';
+        }
+
+        function verifyImportedIds(ids) {
+            var savedPart = loadPartition(targetPartKey);
+            var accs = savedPart.accessories || [];
+            for (var v = 0; v < ids.length; v++) {
+                var found = false;
+                for (var a = 0; a < accs.length; a++) {
+                    if (accs[a].id === ids[v]) { found = true; break; }
+                }
+                if (!found) return false;
+            }
+            return true;
+        }
 
         function finishImport() {
             var importedList = importedAccs.filter(function (a) { return !!a; });
             var idList = newIds.filter(function (id) { return !!id; });
             if (importedList.length === 0) {
-                delete modal.dataset.running;
-                statusEl.innerHTML = '<div style="color:#e57373">图片读取失败</div>';
-                modal.querySelector('#om-acc-bimport-start').disabled = false;
-                modal.querySelector('#om-acc-bimport-start').textContent = '重新导入';
-                modal.querySelector('#om-acc-bimport-close').textContent = '取消';
+                showImportFailure('图片读取或上传失败');
                 return;
             }
-            var p = loadCurrent();
+            var p = loadPartition(targetPartKey);
             if (!Array.isArray(p.accessories)) p.accessories = [];
             p.accessories = importedList.concat(p.accessories);
-            saveCurrent(p);
+            savePartition(targetPartKey, p);
+            if (!verifyImportedIds(idList)) {
+                showImportFailure('保存失败/空间不足/后端写入失败');
+                return;
+            }
             fn.renderAccCatbar(); fn.renderGrid();
             statusEl.innerHTML = '<div style="color:#4caf50;font-weight:600">已导入 ' + importedList.length + ' 个单品</div>';
             if (useAI && fn.openAccBatchDescModal) {
@@ -1614,32 +1649,36 @@ function openAccBatchImportModal(files, defaultCat, defaultSubCat) {
             }
         }
 
-        files.forEach(function (file, idx) {
+        function processNext(idx) {
+            if (idx >= files.length) { finishImport(); return; }
+            statusEl.textContent = '压缩中... ' + (idx + 1) + '/' + files.length;
             var reader = new FileReader();
             reader.onload = function (e) {
                 compressImage(e.target.result, function (compressed) {
-                    var id = 'a_' + genId().substring(0, 8);
-                    importedAccs[idx] = {
-                        id: id,
-                        name: '单品' + (baseCount + idx + 1),
-                        category: cat,
-                        subCategory: subCat,
-                        description: '',
-                        imageData: compressed,
-                        createdAt: Date.now()
-                    };
-                    newIds[idx] = id;
-                    pending--;
-                    statusEl.textContent = '压缩中... ' + (files.length - pending) + '/' + files.length;
-                    if (pending === 0) finishImport();
+                    prepareImageForStorage(compressed, idx, function (err, imageData) {
+                        if (!err) {
+                            var id = 'a_' + genId().substring(0, 8);
+                            importedAccs[idx] = {
+                                id: id,
+                                name: '单品' + (baseCount + idx + 1),
+                                category: cat,
+                                subCategory: subCat,
+                                description: '',
+                                imageData: imageData,
+                                createdAt: Date.now()
+                            };
+                            newIds[idx] = id;
+                        }
+                        processNext(idx + 1);
+                    });
                 });
             };
             reader.onerror = function () {
-                pending--;
-                if (pending === 0) finishImport();
+                processNext(idx + 1);
             };
-            reader.readAsDataURL(file);
-        });
+            reader.readAsDataURL(files[idx]);
+        }
+        processNext(0);
     });
 }
 

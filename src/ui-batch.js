@@ -673,7 +673,8 @@ function processImport(imported, mode) {
 
 // ── 批量导入弹窗 ─────────────────────────────────────────
 function openBatchImportModal(files) {
-    var curPart = loadCurrent();
+    var targetPartKey = currentPartKey();
+    var curPart = loadPartition(targetPartKey);
     var meta = loadMeta();
     var curCat = (state.curCat && state.curCat !== '__all__') ? state.curCat : '';
     var viewCats = curPart.categories || [];
@@ -728,13 +729,50 @@ function openBatchImportModal(files) {
         var newIds = [];
         var importedOutfits = [];
 
+        function prepareImageForStorage(compressed, idx, cb) {
+            if (!isServerMode()) { cb(null, compressed); return; }
+            statusEl.textContent = '上传中... ' + (idx + 1) + '/' + files.length;
+            uploadImage(compressed, function (err, imageData) {
+                if (err || !imageData || imageData.indexOf('data:image/') === 0) {
+                    cb('图片上传失败/后端写入失败');
+                    return;
+                }
+                cb(null, imageData);
+            });
+        }
+
+        function showImportFailure(msg) {
+            var text = msg || '保存失败/空间不足/后端写入失败';
+            delete modal.dataset.running;
+            statusEl.innerHTML = '<div style="color:#e57373;font-weight:600">' + esc(text) + '</div>';
+            toast(text, true);
+            modal.querySelector('#om-bimport-start').disabled = false;
+            modal.querySelector('#om-bimport-start').textContent = '重新导入';
+            modal.querySelector('#om-bimport-close').textContent = '取消';
+        }
+
+        function verifyImportedIds(ids) {
+            var savedPart = loadPartition(targetPartKey);
+            for (var v = 0; v < ids.length; v++) {
+                if (!partGetById(savedPart, ids[v])) return false;
+            }
+            return true;
+        }
+
         function compressNext(i) {
             if (i >= files.length) {
                 if (importedOutfits.length > 0) {
-                    var finalPart = loadCurrent();
+                    var finalPart = loadPartition(targetPartKey);
                     if (!Array.isArray(finalPart.outfits)) finalPart.outfits = [];
                     finalPart.outfits = importedOutfits.filter(function (o) { return !!o; }).concat(finalPart.outfits);
-                    saveCurrent(finalPart);
+                    savePartition(targetPartKey, finalPart);
+                    if (!verifyImportedIds(newIds)) {
+                        showImportFailure('保存失败/空间不足/后端写入失败');
+                        return;
+                    }
+                } else if (files.length > 0) {
+                    showImportFailure('图片读取或上传失败');
+                    return;
                 }
                 delete modal.dataset.running;
                 statusEl.innerHTML = '<div style="color:#4caf50;font-weight:600">✅ 已导入 ' + imported + ' 套穿搭</div>';
@@ -763,20 +801,24 @@ function openBatchImportModal(files) {
             var reader = new FileReader();
             reader.onload = function (e) {
                 compressImage(e.target.result, function (compressed) {
-                    var id = genId();
-                    var newOutfit = {
-                        id: id,
-                        name: '穿搭' + (i + 1),
-                        category: cat,
-                        description: '',
-                        sceneTag: '',
-                        imageData: compressed,
-                        createdAt: Date.now()
-                    };
-                    importedOutfits[i] = newOutfit;
-                    newIds.push(id);
-                    imported++;
-                    compressNext(i + 1);
+                    prepareImageForStorage(compressed, i, function (err, imageData) {
+                        if (!err) {
+                            var id = genId();
+                            var newOutfit = {
+                                id: id,
+                                name: '穿搭' + (i + 1),
+                                category: cat,
+                                description: '',
+                                sceneTag: '',
+                                imageData: imageData,
+                                createdAt: Date.now()
+                            };
+                            importedOutfits[i] = newOutfit;
+                            newIds.push(id);
+                            imported++;
+                        }
+                        compressNext(i + 1);
+                    });
                 });
             };
             reader.onerror = function () { compressNext(i + 1); };
