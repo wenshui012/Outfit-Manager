@@ -30,6 +30,29 @@ function ensurePartArrays(part) {
     if (!Array.isArray(part.accCategories)) part.accCategories = [];
 }
 
+function applyUserPartitionToExport(data) {
+    var userPart = loadPartition(currentUserPartKey());
+    ensurePartArrays(userPart);
+    data.outfits = userPart.outfits;
+    data.categories = userPart.categories;
+    data.activeIds = userPart.activeIds;
+    data.accessories = userPart.accessories;
+    data.accCategories = userPart.accCategories;
+    return data;
+}
+
+function getImportCharNames(imported) {
+    var names = (imported && Array.isArray(imported.charNames) && imported.charNames.length > 0)
+        ? imported.charNames
+        : Object.keys((imported && imported.chars) || {});
+    var result = [];
+    (names || []).forEach(function (cn) {
+        if (!cn || cn === SHARED_CHAR_KEY || result.indexOf(cn) !== -1) return;
+        result.push(cn);
+    });
+    return result;
+}
+
 function mergeCategoryList(target, incoming) {
     if (!Array.isArray(target)) target = [];
     (incoming || []).forEach(function (c) {
@@ -290,13 +313,14 @@ function exportData() {
 
     document.getElementById('om-exp-all').addEventListener('click', function () {
         _mp.removeChild(modal);
-        doExport(d, 'outfit-mgr-backup-' + new Date().toISOString().slice(0, 10) + '.json');
+        doExport(applyUserPartitionToExport(d), 'outfit-mgr-backup-' + new Date().toISOString().slice(0, 10) + '.json');
         toast('✅ 已导出完整数据');
     });
 
     document.getElementById('om-exp-user').addEventListener('click', function () {
         _mp.removeChild(modal);
-        doExport({ type: 'user', outfits: d.outfits, categories: d.categories, accessories: d.accessories || [], accCategories: d.accCategories || [] }, 'outfit-mgr-user-' + new Date().toISOString().slice(0, 10) + '.json');
+        var userExport = applyUserPartitionToExport({ type: 'user' });
+        doExport(userExport, 'outfit-mgr-user-' + new Date().toISOString().slice(0, 10) + '.json');
         toast('✅ 已导出 User 穿搭');
     });
 
@@ -311,8 +335,9 @@ function exportData() {
     var expCharAll = document.getElementById('om-exp-char-all');
     if (expCharAll) expCharAll.addEventListener('click', function () {
         _mp.removeChild(modal);
-        var charExport = { type: 'chars_all', charNames: d.charNames, chars: {} };
-        (d.charNames || []).forEach(function (cn) { charExport.chars[cn] = getCharData(d, cn); });
+        var exportCharNames = getImportCharNames({ charNames: d.charNames || [], chars: d.chars || {} });
+        var charExport = { type: 'chars_all', charNames: exportCharNames, chars: {} };
+        exportCharNames.forEach(function (cn) { charExport.chars[cn] = getCharData(d, cn); });
         if (d.chars && d.chars[SHARED_CHAR_KEY]) {
             var sc = d.chars[SHARED_CHAR_KEY];
             charExport.chars[SHARED_CHAR_KEY] = {
@@ -324,7 +349,7 @@ function exportData() {
             };
         }
         doExport(charExport, 'outfit-mgr-all-chars-' + new Date().toISOString().slice(0, 10) + '.json');
-        toast('✅ 已导出全部角色（' + d.charNames.length + '个）');
+        toast('✅ 已导出全部角色（' + exportCharNames.length + '个）');
     });
 }
 
@@ -466,6 +491,41 @@ function processImport(imported, mode) {
             return { updated: updated, added: added };
         }
 
+        function importSharedCharData(target, src, importMode) {
+            if (!src) return 0;
+            if (!target.chars) target.chars = {};
+            target.charNames = getImportCharNames({ charNames: target.charNames || [], chars: target.chars || {} });
+            var srcC = src.categories || [];
+            var srcAC = src.accCategories || [];
+            var count = 0;
+            if (importMode === 'replace') {
+                var accClone = cloneAccessoryList(src.accessories || [], []);
+                var srcO = (src.outfits || []).map(function (o) { return cloneOutfitForImport(o, accClone.map); });
+                target.chars[SHARED_CHAR_KEY] = { outfits: srcO, categories: cloneJson(srcC, []), activeIds: [], accessories: accClone.list, accCategories: cloneJson(srcAC, []) };
+                count = srcO.length;
+            } else if (importMode === 'update') {
+                var cd0 = getCharData(target, SHARED_CHAR_KEY);
+                ensurePartArrays(cd0);
+                var accMap0 = mergeAccessoriesByName(cd0.accessories, src.accessories || []);
+                var mappedOutfits0 = (src.outfits || []).map(function (o) { return remapKitAccIds(cloneJson(o, {}), accMap0); });
+                var r0 = mergeByName(cd0.outfits, mappedOutfits0);
+                cd0.categories = mergeCategoryList(cd0.categories, srcC);
+                cd0.accCategories = mergeCategoryList(cd0.accCategories, srcAC);
+                count = r0.updated + r0.added;
+            } else {
+                var cd = getCharData(target, SHARED_CHAR_KEY);
+                ensurePartArrays(cd);
+                var accAppend = cloneAccessoryList(src.accessories || [], cd.accessories);
+                accAppend.list.forEach(function (a) { cd.accessories.push(a); });
+                cd.accCategories = mergeCategoryList(cd.accCategories, srcAC);
+                var srcO2 = (src.outfits || []).map(function (o) { return cloneOutfitForImport(o, accAppend.map); });
+                srcO2.forEach(function (o) { cd.outfits.push(o); });
+                cd.categories = mergeCategoryList(cd.categories, srcC);
+                count = srcO2.length;
+            }
+            return count;
+        }
+
         if (imported.type === 'char' && imported.charName) {
             var cn = imported.charName;
             if (cn === SHARED_CHAR_KEY) {
@@ -536,9 +596,11 @@ function processImport(imported, mode) {
         if (imported.type === 'chars_all' && imported.chars) {
             if (!dd.chars) dd.chars = {};
             if (!dd.charNames) dd.charNames = [];
-            var importedNames = (imported.charNames || Object.keys(imported.chars)).slice();
-            if (imported.chars[SHARED_CHAR_KEY] && importedNames.indexOf(SHARED_CHAR_KEY) === -1) importedNames.push(SHARED_CHAR_KEY);
+            var importedNames = getImportCharNames(imported);
             var totalOutfits = 0;
+            var hasSharedImport = !!imported.chars[SHARED_CHAR_KEY];
+            var sharedCount = importSharedCharData(dd, imported.chars[SHARED_CHAR_KEY], mode);
+            totalOutfits += sharedCount;
             importedNames.forEach(function (cn) {
                 var src = imported.chars[cn]; if (!src) return;
                 var srcC2 = src.categories || [];
@@ -571,7 +633,7 @@ function processImport(imported, mode) {
                 if (cn !== SHARED_CHAR_KEY && dd.charNames.indexOf(cn) === -1) dd.charNames.push(cn);
             });
             save(dd); fn.renderViewbar(); fn.renderCatbar(); fn.renderGrid(); fn.renderBottomStatus();
-            toast('✅ 已导入 ' + importedNames.length + ' 个角色（共 ' + totalOutfits + ' 套穿搭）');
+            toast('✅ 已导入 ' + (importedNames.length + (hasSharedImport ? 1 : 0)) + ' 个角色（共 ' + totalOutfits + ' 套穿搭）');
             return;
         }
 
@@ -603,7 +665,8 @@ function processImport(imported, mode) {
                 var dd2 = load();
                 if (!dd2.chars) dd2.chars = {};
                 if (!dd2.charNames) dd2.charNames = [];
-                var impNames2 = imported.charNames || Object.keys(imported.chars);
+                var impNames2 = getImportCharNames(imported);
+                importSharedCharData(dd2, imported.chars[SHARED_CHAR_KEY], mode);
                 impNames2.forEach(function (cn) {
                     var src3 = imported.chars[cn]; if (!src3) return;
                     var cd4 = getCharData(dd2, cn);
@@ -650,7 +713,8 @@ function processImport(imported, mode) {
             var dd4 = load();
             if (!dd4.chars) dd4.chars = {};
             if (!dd4.charNames) dd4.charNames = [];
-            var impNames = imported.charNames || Object.keys(imported.chars);
+            var impNames = getImportCharNames(imported);
+            importSharedCharData(dd4, imported.chars[SHARED_CHAR_KEY], mode);
             impNames.forEach(function (cn) {
                 var src2 = imported.chars[cn]; if (!src2) return;
                 var accClone4 = cloneAccessoryList(src2.accessories || [], []);
