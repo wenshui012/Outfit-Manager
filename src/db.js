@@ -356,7 +356,7 @@ function reassembleFullData() {
     var settingsKeys = [
         'mode', 'injectPosition', 'singleTemplate', 'multiTemplate',
         'charSingleTemplate', 'charMultiTemplate', 'imagePrompt', 'multiImagePrompt',
-        'debug', 'apiVision', 'showBall', 'fabImage', 'fabSize', 'tagOrder',
+        'debug', 'apiVision', 'showBall', 'fabImage', 'fabSize', 'fabPos', 'tagOrder',
         'currentView', 'currentChar'
     ];
     settingsKeys.forEach(function (k) { if (meta[k] !== undefined) d[k] = meta[k]; });
@@ -848,7 +848,7 @@ function migrateFromV1(oldData, cb) {
     var settingsKeys = [
         'mode', 'injectPosition', 'singleTemplate', 'multiTemplate',
         'charSingleTemplate', 'charMultiTemplate', 'imagePrompt', 'multiImagePrompt',
-        'debug', 'apiVision', 'showBall', 'fabImage', 'fabSize', 'tagOrder',
+        'debug', 'apiVision', 'showBall', 'fabImage', 'fabSize', 'fabPos', 'tagOrder',
         'currentView'
     ];
     settingsKeys.forEach(function (k) {
@@ -1041,7 +1041,7 @@ function splitServerDataToPartitions(serverData, cb) {
     var settingsKeys = [
         'mode', 'injectPosition', 'singleTemplate', 'multiTemplate',
         'charSingleTemplate', 'charMultiTemplate', 'imagePrompt', 'multiImagePrompt',
-        'debug', 'apiVision', 'showBall', 'fabImage', 'fabSize', 'tagOrder',
+        'debug', 'apiVision', 'showBall', 'fabImage', 'fabSize', 'fabPos', 'tagOrder',
         'currentView'
     ];
     settingsKeys.forEach(function (k) {
@@ -1444,7 +1444,7 @@ export function load() {
     var metaKeys = [
         'mode', 'injectPosition', 'singleTemplate', 'multiTemplate',
         'charSingleTemplate', 'charMultiTemplate', 'imagePrompt', 'multiImagePrompt',
-        'debug', 'apiVision', 'showBall', 'fabImage', 'fabSize', 'tagOrder',
+        'debug', 'apiVision', 'showBall', 'fabImage', 'fabSize', 'fabPos', 'tagOrder',
         'currentView', 'activePresetId'
     ];
     metaKeys.forEach(function (k) { d[k] = meta[k]; });
@@ -1523,7 +1523,7 @@ export function save(d) {
     var settingsKeys = [
         'mode', 'injectPosition', 'singleTemplate', 'multiTemplate',
         'charSingleTemplate', 'charMultiTemplate', 'imagePrompt', 'multiImagePrompt',
-        'debug', 'apiVision', 'showBall', 'fabImage', 'fabSize', 'tagOrder',
+        'debug', 'apiVision', 'showBall', 'fabImage', 'fabSize', 'fabPos', 'tagOrder',
         'currentView', 'activePresetId'
     ];
     settingsKeys.forEach(function (k) { if (d[k] !== undefined) meta[k] = d[k]; });

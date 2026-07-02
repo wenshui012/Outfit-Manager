@@ -32,6 +32,7 @@ export function defMeta() {
         showBall: true,
         fabImage: '',
         fabSize: 38,
+        fabPos: null,
         tagOrder: [],
 
         // 注入配置

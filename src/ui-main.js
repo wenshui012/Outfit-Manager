@@ -23,6 +23,7 @@ import {
 import { genId, esc, toast, getPopupLayer } from './utils.js';
 import { injectStyles } from './styles.js';
 import { state, fn } from './bridge.js';
+import { OM_VERSION } from './version.js';
 
 // ── 预解析活跃穿搭图片（server模式下）──────────────────
 function preResolveActiveImages() {
@@ -363,7 +364,7 @@ function openPopup() {
     ov.innerHTML =
         '<div class="om-box">' +
         '<div class="om-head">' +
-        '<div class="om-head-title"><i class="fa-solid fa-shirt"></i>' + SCRIPT_NAME + '</div>' +
+        '<div class="om-head-title"><i class="fa-solid fa-shirt"></i>' + SCRIPT_NAME + '<span class="om-version">v' + esc(OM_VERSION) + '</span></div>' +
         '<div class="om-head-actions">' +
         '<button class="om-icon-btn" id="om-search-toggle" title="搜索"><i class="fa-solid fa-magnifying-glass"></i></button>' +
         '<button class="om-icon-btn" id="om-filter-toggle" title="筛选"><i class="fa-solid fa-filter"></i></button>' +

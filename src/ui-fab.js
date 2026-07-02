@@ -1,7 +1,7 @@
 // ── 穿搭管理器 · 悬浮球 & 侧栏按钮 ─────────────────────
 // FAB 拖拽悬浮球 + 扩展菜单侧栏按钮
 
-import { load, save } from './db.js';
+import { load, loadMeta, saveMeta } from './db.js';
 import { getById } from './data.js';
 import { esc, compressImage } from './utils.js';
 import { fn } from './bridge.js';
@@ -13,9 +13,50 @@ var FAB_ID = 'om-fab-main';
 // ── FAB（悬浮球）────────────────────────────────────────
 var fabResizeHandler = null;
 
+function clampFabElement(container, size) {
+    if (!container) return false;
+    var rect = container.getBoundingClientRect();
+    var vw = window.innerWidth || document.documentElement.clientWidth;
+    var vh = window.innerHeight || document.documentElement.clientHeight;
+    if (!rect.width || !rect.height || vw <= 0 || vh <= 0) return false;
+    var left = Math.max(0, Math.min(rect.left, vw - size));
+    var top = Math.max(0, Math.min(rect.top, vh - size));
+    container.style.setProperty('left', left + 'px', 'important');
+    container.style.setProperty('top', top + 'px', 'important');
+    container.style.setProperty('position', 'fixed', 'important');
+    container.style.setProperty('display', 'flex', 'important');
+    container.style.setProperty('visibility', 'visible', 'important');
+    container.style.setProperty('opacity', '1', 'important');
+    container.style.setProperty('pointer-events', 'none', 'important');
+    return true;
+}
+
+function fabNeedsRebuild(container) {
+    if (!container || !container.parentNode) return true;
+    var btn = container.querySelector('#om-fab-main-btn');
+    if (!btn) return true;
+    var cs = window.getComputedStyle ? window.getComputedStyle(container) : null;
+    var bs = window.getComputedStyle ? window.getComputedStyle(btn) : null;
+    if (cs && (cs.display === 'none' || cs.visibility === 'hidden' || cs.opacity === '0')) return true;
+    if (bs && (bs.display === 'none' || bs.visibility === 'hidden' || bs.opacity === '0')) return true;
+    var rect = container.getBoundingClientRect();
+    if (rect.right < 0 || rect.bottom < 0 || rect.left > window.innerWidth || rect.top > window.innerHeight) return true;
+    return false;
+}
+
 function injectFab() {
-    if (document.getElementById(FAB_ID)) return;
-    var d = load(); if (d.showBall === false) return;
+    var d = loadMeta();
+    var existing = document.getElementById(FAB_ID);
+    if (d.showBall === false) {
+        if (existing && existing.parentNode) existing.parentNode.removeChild(existing);
+        return;
+    }
+    if (existing) {
+        var existingSize = d.fabSize || 38;
+        if (!fabNeedsRebuild(existing) && clampFabElement(existing, existingSize)) return;
+        if (existing.parentNode) existing.parentNode.removeChild(existing);
+    }
+    if (!document.body) return;
     var container = document.createElement('div'); container.id = FAB_ID;
     var MAIN_SIZE = d.fabSize || 38;
     var accent = 'var(--SmartThemeQuoteColor,#7c6daf)';
@@ -23,7 +64,7 @@ function injectFab() {
     function posFab() {
         var vh = window.innerHeight || document.documentElement.clientHeight;
         var vw = window.innerWidth || document.documentElement.clientWidth;
-        var dd = load();
+        var dd = loadMeta();
         var mainTop, mainLeft;
         if (dd.fabPos && typeof dd.fabPos.top === 'number' && typeof dd.fabPos.left === 'number') {
             // 使用保存的位置，但约束在屏幕内
@@ -92,9 +133,9 @@ function injectFab() {
         } else {
             // 拖拽结束：保存位置
             var rect = container.getBoundingClientRect();
-            var dd = load();
+            var dd = loadMeta();
             dd.fabPos = { top: Math.round(rect.top), left: Math.round(rect.left) };
-            save(dd);
+            saveMeta(dd);
         }
     });
     // PC端点击

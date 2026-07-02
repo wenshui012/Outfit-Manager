@@ -53,6 +53,37 @@ function getImportCharNames(imported) {
     return result;
 }
 
+function getOutfitMoveTarget(targetType, targetChar, presetIdx) {
+    var info = { partKey: '', label: 'User', isPreset: false };
+    if (targetType === 'user') {
+        info.partKey = currentUserPartKey();
+        return info;
+    }
+    if (targetType === 'char' && targetChar) {
+        if (targetChar === SHARED_CHAR_KEY) {
+            info.partKey = 'char:' + SHARED_CHAR_KEY;
+            info.label = SHARED_CHAR_LABEL;
+            return info;
+        }
+        var cid = charIdByName(targetChar);
+        if (cid) {
+            info.partKey = 'char:' + cid;
+            info.label = targetChar;
+        }
+        return info;
+    }
+    if (targetType === 'preset') {
+        var meta = loadMeta();
+        var p = (meta.presets || [])[presetIdx];
+        if (p) {
+            info.partKey = p.partKey;
+            info.label = p.name || '预设';
+            info.isPreset = true;
+        }
+    }
+    return info;
+}
+
 function mergeCategoryList(target, incoming) {
     if (!Array.isArray(target)) target = [];
     (incoming || []).forEach(function (c) {
@@ -1117,6 +1148,7 @@ function openAccBatchDescModal(ids) {
 // onDone: 完成后回调
 function openMoveToPanel(selectedIds, onDone) {
     var d = load();
+    var sourcePartKey = currentPartKey();
     var count = selectedIds.length;
     var isCharView = d.currentView === 'char' && d.currentChar;
     var currentLabel = isCharView ? (d.currentChar === SHARED_CHAR_KEY ? SHARED_CHAR_LABEL : d.currentChar) : 'User';
@@ -1148,13 +1180,13 @@ function openMoveToPanel(selectedIds, onDone) {
         item.addEventListener('click', function () {
             var type = item.dataset.type;
             closeSheet(sheet1);
-            openMoveDetailSheet(selectedIds, type, isCopy, onDone);
+            openMoveDetailSheet(selectedIds, sourcePartKey, type, isCopy, onDone);
         });
     });
 }
 
 // ── 第二步：折叠式详情选择 ──
-function openMoveDetailSheet(selectedIds, type, isCopy, onDone) {
+function openMoveDetailSheet(selectedIds, sourcePartKey, type, isCopy, onDone) {
     var d = load();
     var count = selectedIds.length;
     var actionWord = isCopy ? '复制' : '移动';
@@ -1162,10 +1194,7 @@ function openMoveDetailSheet(selectedIds, type, isCopy, onDone) {
 
     function doAction(targetType, targetChar, presetIdx, targetCat, targetSub) {
         closeSheet(sheet);
-        var isCurrentView = false;
-        if (targetType === 'user' && (d.currentView === 'user' || !d.currentChar)) isCurrentView = true;
-        if (targetType === 'char' && targetChar && d.currentView === 'char' && d.currentChar === targetChar) isCurrentView = true;
-        executeMove(selectedIds, targetType, targetChar, presetIdx, targetCat, targetSub, isCurrentView, isCopy, onDone);
+        executeMove(selectedIds, sourcePartKey, targetType, targetChar, presetIdx, targetCat, targetSub, isCopy, onDone);
     }
 
     function buildCatTree(cats, indent) {
@@ -1194,26 +1223,30 @@ function openMoveDetailSheet(selectedIds, type, isCopy, onDone) {
         var dd = load();
         var h = '';
         if (type === 'user') {
-            h += buildCatTree(dd.categories, 16);
+            var userPart = loadPartition(currentUserPartKey());
+            h += buildCatTree((userPart && userPart.categories) || [], 16);
         } else if (type === 'char') {
             // 通用衣柜
-            var shCd = getCharData(dd, SHARED_CHAR_KEY);
+            var shPart = loadPartition('char:' + SHARED_CHAR_KEY);
             var shOpen = exp[SHARED_CHAR_KEY];
             h += '<div class="om-acc-row om-acc-char" data-cn="' + SHARED_CHAR_KEY + '"><i class="fa-solid fa-chevron-right om-acc-arrow' + (shOpen ? ' open' : '') + '"></i><i class="fa-solid fa-globe" style="opacity:.45;margin-right:5px"></i>' + SHARED_CHAR_LABEL + '</div>';
-            if (shOpen) h += buildCatTree(shCd.categories, 36);
+            if (shOpen) h += buildCatTree((shPart && shPart.categories) || [], 36);
             // 其他角色
             (dd.charNames || []).forEach(function (cn) {
-                var cd = getCharData(dd, cn);
+                var cid = charIdByName(cn);
+                var cd = cid ? loadPartition('char:' + cid) : getCharData(dd, cn);
                 var cOpen = exp[cn];
                 h += '<div class="om-acc-row om-acc-char" data-cn="' + esc(cn) + '"><i class="fa-solid fa-chevron-right om-acc-arrow' + (cOpen ? ' open' : '') + '"></i><i class="fa-solid fa-masks-theater" style="opacity:.45;margin-right:5px"></i>' + esc(cn) + '</div>';
                 if (cOpen) h += buildCatTree(cd.categories, 36);
             });
         } else if (type === 'preset') {
-            (dd.presets || []).forEach(function (p, pi) {
+            var meta = loadMeta();
+            (meta.presets || []).forEach(function (p, pi) {
                 if (!p) return;
+                var pp = p.partKey ? loadPartition(p.partKey) : null;
                 var pOpen = exp['p_' + pi];
-                h += '<div class="om-acc-row om-acc-preset" data-pidx="' + pi + '"><i class="fa-solid fa-chevron-right om-acc-arrow' + (pOpen ? ' open' : '') + '"></i><i class="fa-solid fa-bookmark" style="opacity:.45;margin-right:5px"></i>' + esc(p.name || '预设' + (pi + 1)) + ' <span style="opacity:.4;font-size:.85em">' + (p.outfits ? p.outfits.length : 0) + '套</span></div>';
-                if (pOpen) h += buildCatTree((p && p.categories) || [], 36);
+                h += '<div class="om-acc-row om-acc-preset" data-pidx="' + pi + '"><i class="fa-solid fa-chevron-right om-acc-arrow' + (pOpen ? ' open' : '') + '"></i><i class="fa-solid fa-bookmark" style="opacity:.45;margin-right:5px"></i>' + esc(p.name || '预设' + (pi + 1)) + ' <span style="opacity:.4;font-size:.85em">' + (pp && pp.outfits ? pp.outfits.length : 0) + '套</span></div>';
+                if (pOpen) h += buildCatTree((pp && pp.categories) || [], 36);
             });
         }
         return h;
@@ -1283,99 +1316,84 @@ function openMoveDetailSheet(selectedIds, type, isCopy, onDone) {
 }
 
 // ── 执行移动/复制 ──
-function executeMove(selectedIds, targetType, targetChar, presetIdx, targetCat, targetSub, isCurrentView, isCopy, onDone) {
-    var dd = load();
+function executeMove(selectedIds, sourcePartKey, targetType, targetChar, presetIdx, targetCat, targetSub, isCopy, onDone) {
     var count = selectedIds.length;
+    var sourcePart = loadPartition(sourcePartKey);
+    ensurePartArrays(sourcePart);
+    var targetInfo = getOutfitMoveTarget(targetType, targetChar, presetIdx);
+    if (!targetInfo.partKey) { toast('目标衣柜不存在', true); return; }
+    var samePartition = sourcePartKey === targetInfo.partKey;
 
     // 收集要操作的 outfit 对象
     var sourceOutfits = [];
     selectedIds.forEach(function (id) {
-        var o = getById(dd, id);
+        var o = partGetById(sourcePart, id);
         if (o) sourceOutfits.push(o);
     });
 
     if (sourceOutfits.length === 0) { toast('未找到穿搭', true); return; }
 
-    if (isCurrentView && !isCopy) {
+    if (samePartition && !isCopy) {
         // ── 同视角改分类 ──
         sourceOutfits.forEach(function (o) {
             o.category = targetCat;
             o.subCategory = targetSub || '';
         });
-        save(dd);
+        savePartition(sourcePartKey, sourcePart);
+        syncActivePartitions(sourcePartKey, sourcePart.activeIds || []);
         var catLabel = targetCat ? (targetSub ? '「' + targetCat + ' > ' + targetSub + '」' : '「' + targetCat + '」') : '无分类';
         toast('✅ 已将 ' + count + ' 套更改为' + catLabel);
     } else if (targetType === 'preset') {
         // ── 复制到预设（预设始终是复制）──
-        var p = dd.presets[presetIdx];
-        if (!p) { toast('预设不存在', true); return; }
-        if (!p.outfits) p.outfits = [];
-        var samePresetPartition = dd.currentView !== 'char' && p.id === dd.activePresetId;
+        var presetPart = loadPartition(targetInfo.partKey);
+        ensurePartArrays(presetPart);
         sourceOutfits.forEach(function (o) {
             var copy = JSON.parse(JSON.stringify(o));
             copy.id = genId();
             copy.category = targetCat;
             copy.subCategory = targetSub || '';
-            if (!samePresetPartition) clearOutfitKits(copy);
-            p.outfits.push(copy);
+            if (!samePartition) clearOutfitKits(copy);
+            presetPart.outfits.push(copy);
         });
-        save(dd);
-        toast('✅ 已复制 ' + count + ' 套到预设「' + (p.name || '预设') + '」');
+        savePartition(targetInfo.partKey, presetPart);
+        toast('✅ 已复制 ' + count + ' 套到预设「' + targetInfo.label + '」');
     } else if (isCopy) {
         // ── 复制到目标 ──
-        var targetOutfits2;
-        if (targetType === 'char' && targetChar) {
-            var tcd2 = getCharData(dd, targetChar);
-            targetOutfits2 = tcd2.outfits;
-            if (targetChar !== SHARED_CHAR_KEY && dd.charNames.indexOf(targetChar) === -1) dd.charNames.push(targetChar);
-        } else {
-            targetOutfits2 = dd.outfits;
-        }
+        var targetPart2 = loadPartition(targetInfo.partKey);
+        ensurePartArrays(targetPart2);
         sourceOutfits.forEach(function (o) {
             var copy = JSON.parse(JSON.stringify(o));
             copy.id = genId();
             copy.category = targetCat;
             copy.subCategory = targetSub || '';
-            if (!isCurrentView) clearOutfitKits(copy);
-            targetOutfits2.push(copy);
+            if (!samePartition) clearOutfitKits(copy);
+            targetPart2.outfits.push(copy);
         });
-        save(dd);
-        var destLabel2 = (targetType === 'char' && targetChar) ? (targetChar === SHARED_CHAR_KEY ? SHARED_CHAR_LABEL : targetChar) : 'User';
-        toast('✅ 已复制 ' + count + ' 套到「' + destLabel2 + '」');
+        savePartition(targetInfo.partKey, targetPart2);
+        toast('✅ 已复制 ' + count + ' 套到「' + targetInfo.label + '」');
     } else {
         // ── 跨视角移动（User↔Char / Char↔Char）──
-        // 1) 从源位置删除
-        // 从 user outfits 删
-        dd.outfits = dd.outfits.filter(function (o) { return selectedIds.indexOf(o.id) === -1; });
-        dd.activeIds = (dd.activeIds || []).filter(function (id) { return selectedIds.indexOf(id) === -1; });
-        // 从所有 chars 删
-        if (dd.chars) {
-            for (var cn in dd.chars) {
-                dd.chars[cn].outfits = (dd.chars[cn].outfits || []).filter(function (o) { return selectedIds.indexOf(o.id) === -1; });
-                dd.chars[cn].activeIds = (dd.chars[cn].activeIds || []).filter(function (id) { return selectedIds.indexOf(id) === -1; });
-            }
-        }
-
-        // 2) 插入目标位置
-        var targetOutfits;
-        if (targetType === 'char' && targetChar) {
-            var tcd = getCharData(dd, targetChar);
-            targetOutfits = tcd.outfits;
-            if (targetChar !== SHARED_CHAR_KEY && dd.charNames.indexOf(targetChar) === -1) dd.charNames.push(targetChar);
-        } else {
-            targetOutfits = dd.outfits;
-        }
+        var targetPart = loadPartition(targetInfo.partKey);
+        ensurePartArrays(targetPart);
+        var existingIds = {};
+        targetPart.outfits.forEach(function (o) { if (o && o.id) existingIds[o.id] = true; });
 
         sourceOutfits.forEach(function (o) {
-            o.category = targetCat;
-            o.subCategory = targetSub || '';
-            clearOutfitKits(o);
-            targetOutfits.push(o);
+            var moved = JSON.parse(JSON.stringify(o));
+            while (existingIds[moved.id]) moved.id = genId();
+            existingIds[moved.id] = true;
+            moved.category = targetCat;
+            moved.subCategory = targetSub || '';
+            clearOutfitKits(moved);
+            targetPart.outfits.push(moved);
         });
 
-        save(dd);
-        var destLabel = (targetType === 'char' && targetChar) ? (targetChar === SHARED_CHAR_KEY ? SHARED_CHAR_LABEL : targetChar) : 'User';
-        toast('✅ 已移动 ' + count + ' 套到「' + destLabel + '」');
+        sourcePart.outfits = (sourcePart.outfits || []).filter(function (o) { return selectedIds.indexOf(o.id) === -1; });
+        sourcePart.activeIds = (sourcePart.activeIds || []).filter(function (id) { return selectedIds.indexOf(id) === -1; });
+        savePartition(targetInfo.partKey, targetPart);
+        savePartition(sourcePartKey, sourcePart);
+        syncActivePartitions(sourcePartKey, sourcePart.activeIds || []);
+        toast('✅ 已移动 ' + count + ' 套到「' + targetInfo.label + '」');
     }
 
     if (onDone) onDone();

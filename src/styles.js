@@ -27,8 +27,9 @@ export function injectStyles() {
             /* ══ 顶栏 ══ */
             '.om-head{display:flex;align-items:center;gap:8px;padding:12px 15px;flex-shrink:0;',
             'border-bottom:1px solid rgba(127,127,127,.1);background:rgba(0,0,0,.12);}',
-            '.om-head-title{font-weight:700;font-size:1.05em;display:flex;align-items:center;gap:7px;flex:1;min-width:0;}',
+            '.om-head-title{font-weight:700;font-size:1.05em;display:flex;align-items:center;gap:5px;flex:1;min-width:0;}',
             '.om-head-title i{color:var(--SmartThemeQuoteColor,#7c6daf);}',
+            '.om-version{align-self:flex-end;font-size:.58em;font-weight:700;line-height:1;padding:0 0 2px;color:var(--om-text);opacity:.55;flex-shrink:0;}',
             '.om-head-actions{display:flex;align-items:center;gap:4px;}',
             '.om-icon-btn{cursor:pointer;background:none;border:none;opacity:.55;font-size:1.15em;',
             'width:34px;height:34px;border-radius:50%;display:flex;align-items:center;justify-content:center;',
