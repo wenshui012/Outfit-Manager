@@ -112,6 +112,96 @@ function cleanParsed(obj) {
     return obj;
 }
 
+function getCategoryName(catObj) {
+    return catObj && typeof catObj === 'object' ? (catObj.name || '') : (catObj || '');
+}
+
+function getCategoryChildren(catObj) {
+    return catObj && typeof catObj === 'object' && Array.isArray(catObj.children) ? catObj.children : [];
+}
+
+function buildClassificationPrompt(categories) {
+    var lines = [];
+    (categories || []).forEach(function (catObj) {
+        var name = getCategoryName(catObj);
+        if (!name) return;
+        var children = getCategoryChildren(catObj).filter(function (sc) { return !!sc; });
+        lines.push('- ' + name + (children.length ? '：' + children.join(' / ') : ''));
+    });
+    return [
+        '你是穿搭图片分类助手。请只根据图片判断它最适合放进哪个现有分类。',
+        '只能从下面列出的现有分类和子分类中选择，不能新增、改写、翻译或猜造分类。',
+        '如果不确定，选择最接近的父分类，subCategory 可以为空字符串。',
+        '只回复 JSON，不要代码块：{"category":"现有父分类","subCategory":"现有子分类或空字符串","confidence":0.0}',
+        '',
+        '现有分类：',
+        lines.join('\n')
+    ].join('\n');
+}
+
+function buildCombinedDescriptionPrompt(descriptionPrompt, categories) {
+    var lines = [];
+    (categories || []).forEach(function (catObj) {
+        var name = getCategoryName(catObj);
+        if (!name) return;
+        var children = getCategoryChildren(catObj).filter(function (sc) { return !!sc; });
+        lines.push('- ' + name + (children.length ? '：' + children.join(' / ') : ''));
+    });
+    return [
+        '请根据图片同时完成【穿搭描述】和【现有分类判断】。',
+        '',
+        '穿搭描述要求：',
+        descriptionPrompt || '生成穿搭名称和服装描述。',
+        '',
+        '分类要求：只能从下面列出的现有分类和子分类中选择，不能新增、改写、翻译或猜造分类。如果不确定，选择最接近的父分类，subCategory 可以为空字符串。',
+        '',
+        '只回复 JSON，不要代码块：{"name":"穿搭名称6字以内","description":"服装描述","category":"现有父分类或空字符串","subCategory":"现有子分类或空字符串","confidence":0.0}',
+        '',
+        '现有分类：',
+        lines.join('\n')
+    ].join('\n');
+}
+
+function validateClassificationResult(parsed, categories, fallback) {
+    fallback = fallback || { category: '', subCategory: '' };
+    var result = { category: fallback.category || '', subCategory: fallback.subCategory || '', confidence: 0 };
+    if (!parsed || typeof parsed !== 'object') return result;
+
+    var confidence = Number(parsed.confidence);
+    if (!isFinite(confidence)) confidence = 0.5;
+    if (confidence > 1) confidence = confidence / 100;
+    if (confidence < 0.35) return result;
+
+    var wantedCat = (parsed.category || parsed.cat || '').trim();
+    var wantedSub = (parsed.subCategory || parsed.subcategory || parsed.sub || '').trim();
+    if (!wantedCat && !wantedSub) return result;
+
+    var cats = categories || [];
+    var foundCat = null;
+    for (var i = 0; i < cats.length; i++) {
+        if (getCategoryName(cats[i]) === wantedCat) { foundCat = cats[i]; break; }
+    }
+
+    if (!foundCat && wantedSub) {
+        for (var j = 0; j < cats.length; j++) {
+            if (getCategoryChildren(cats[j]).indexOf(wantedSub) !== -1) {
+                foundCat = cats[j];
+                wantedCat = getCategoryName(cats[j]);
+                break;
+            }
+        }
+    }
+
+    if (!foundCat) return result;
+    result.category = wantedCat;
+    result.confidence = confidence;
+
+    var subs = getCategoryChildren(foundCat);
+    if (wantedSub && subs.indexOf(wantedSub) !== -1) result.subCategory = wantedSub;
+    else result.subCategory = '';
+    return result;
+}
+
 // ── 单次 Vision API 调用 ─────────────────────────────────
 export function callVisionAPI(apiCfg, image, systemPrompt, cb) {
     var url = normalizeEndpoint(apiCfg.endpoint, '/v1/chat/completions');
@@ -150,20 +240,145 @@ export function callVisionAPI(apiCfg, image, systemPrompt, cb) {
     }).catch(function (e) { cb(e.message || String(e)); });
 }
 
+// ── 图片自动分类：只允许命中现有穿搭分类 ──────────────────
+export function classifyOutfitImage(apiCfg, image, categories, fallback, cb) {
+    if (!apiCfg || !apiCfg.endpoint || !apiCfg.key || !apiCfg.model) {
+        cb(null, fallback || { category: '', subCategory: '' });
+        return;
+    }
+    if (!Array.isArray(categories) || categories.length === 0) {
+        cb(null, fallback || { category: '', subCategory: '' });
+        return;
+    }
+    callVisionAPI(apiCfg, image, buildClassificationPrompt(categories), function (err, text) {
+        if (err) { cb(err, fallback || { category: '', subCategory: '' }); return; }
+        var parsed = parseAIResponse(text);
+        cb(null, validateClassificationResult(parsed, categories, fallback));
+    });
+}
+
+function getClassificationFallback(categories, outfit) {
+    var fallback = { category: outfit.category || '', subCategory: outfit.subCategory || '' };
+    var cats = categories || [];
+    var foundCat = null;
+    for (var i = 0; i < cats.length; i++) {
+        if (getCategoryName(cats[i]) === fallback.category) { foundCat = cats[i]; break; }
+    }
+    if (!foundCat) return { category: '', subCategory: '' };
+    if (fallback.subCategory && getCategoryChildren(foundCat).indexOf(fallback.subCategory) === -1) fallback.subCategory = '';
+    return fallback;
+}
+
+// ── 批量自动分类（后台队列）──────────────────────────────
+export function batchClassifyOutfits(outfitIds, options, progressCb, doneCb) {
+    if (typeof options === 'function') {
+        doneCb = progressCb;
+        progressCb = options;
+        options = {};
+    }
+    options = options || {};
+    var meta = loadMeta();
+    var apiCfg = meta.apiVision;
+    if (!apiCfg || !apiCfg.endpoint || !apiCfg.key || !apiCfg.model) {
+        doneCb('请先在设置中配置描述API', 0, []);
+        return;
+    }
+    var sourcePartKey = options.sourcePartKey || currentPartKey();
+    var srcPart = loadPartition(sourcePartKey);
+    var categories = srcPart.categories || [];
+    if (!Array.isArray(categories) || categories.length === 0) {
+        doneCb('还没有分类，无法自动分类', 0, []);
+        return;
+    }
+    var seen = {};
+    var queue = [];
+    (outfitIds || []).forEach(function (id) {
+        if (!id || seen[id]) return;
+        seen[id] = true;
+        var o = partGetById(srcPart, id);
+        if (!o || !o.imageData) return;
+        queue.push({
+            id: id,
+            name: o.name || '穿搭',
+            dataUrl: o.imageData,
+            fallback: getClassificationFallback(categories, o)
+        });
+    });
+    if (queue.length === 0) { doneCb(null, 0, []); return; }
+
+    var resolveCount = 0;
+    queue.forEach(function (item) {
+        resolveImageForExternal(item.dataUrl, function (resolved) {
+            item.dataUrl = resolved;
+            resolveCount++;
+            if (resolveCount >= queue.length) runBatch();
+        });
+    });
+
+    function runBatch() {
+        var done = 0, errors = [], running = 0, idx = 0;
+        var total = queue.length;
+        var concurrency = 2;
+
+        function processNext() {
+            while (running < concurrency && idx < queue.length) {
+                (function (item) {
+                    running++;
+                    classifyOutfitImage(apiCfg, item, categories, item.fallback, function (err, cls) {
+                        running--;
+                        done++;
+                        if (err) {
+                            errors.push({ name: item.name, error: err });
+                        } else {
+                            var cp = loadPartition(sourcePartKey);
+                            var o = partGetById(cp, item.id);
+                            if (!o) {
+                                errors.push({ name: item.name, error: '未找到穿搭数据' });
+                            } else {
+                                o.category = cls && cls.category ? cls.category : '';
+                                o.subCategory = cls && cls.subCategory ? cls.subCategory : '';
+                                savePartition(sourcePartKey, cp);
+                            }
+                        }
+                        var label = '✅ ' + item.name;
+                        if (errors.length > 0 && errors[errors.length - 1].name === item.name) {
+                            label = '❌ ' + item.name;
+                        }
+                        if (progressCb) progressCb(done, total, label);
+                        if (done >= total) doneCb(null, done, errors);
+                        else processNext();
+                    });
+                })(queue[idx]);
+                idx++;
+            }
+        }
+        processNext();
+    }
+}
+
 // ── 批量生成描述（并发队列）─────────────────────────────
 export function batchGenerateDescriptions(outfitIds, options, progressCb, doneCb) {
+    options = options || {};
     var meta = loadMeta();
     var apiCfg = meta.apiVision;
     // 固定源分包 key：后台运行时用户可能切换视角/预设，
     // 回调必须写回启动时的分包，不能跟随 currentPartKey() 漂移
     var sourcePartKey = currentPartKey();
     var srcPart = loadPartition(sourcePartKey);
+    var categories = srcPart.categories || [];
     var queue = [];
     outfitIds.forEach(function (id) {
         var o = partGetById(srcPart, id);
         if (!o || !o.imageData) return;
-        if (o.description && o.description.trim() && !apiCfg.overwrite) return;
-        queue.push({ id: id, name: o.name, dataUrl: o.imageData });
+        var skipDescription = !!(o.description && o.description.trim() && !apiCfg.overwrite);
+        if (skipDescription && !options.autoClassify) return;
+        queue.push({
+            id: id,
+            name: o.name,
+            dataUrl: o.imageData,
+            skipDescription: skipDescription,
+            fallbackClass: getClassificationFallback(categories, o)
+        });
     });
     if (queue.length === 0) { doneCb(null, 0, []); return; }
 
@@ -183,7 +398,13 @@ export function batchGenerateDescriptions(outfitIds, options, progressCb, doneCb
         var done = 0, errors = [], running = 0, idx = 0;
         var total = queue.length;
         var concurrency = 3;
-        var prompt = apiCfg.prompt;
+        var prompt = options.autoClassify ? buildCombinedDescriptionPrompt(apiCfg.prompt, categories) : apiCfg.prompt;
+        var stats = {
+            descTarget: queue.filter(function (item) { return !item.skipDescription; }).length,
+            descSuccess: 0,
+            classTarget: options.autoClassify ? queue.length : 0,
+            classSuccess: 0
+        };
 
         function processNext() {
             while (running < concurrency && idx < queue.length) {
@@ -203,17 +424,25 @@ export function batchGenerateDescriptions(outfitIds, options, progressCb, doneCb
                             var o = partGetById(cp, item.id);
                             if (!o) { errors.push({ name: item.name, error: '未找到穿搭数据' }); }
                             else {
-                                if (parsed && parsed.description) {
+                                if (!item.skipDescription && parsed && parsed.description) {
                                     o.description = parsed.description;
                                     if (options.autoName && parsed.name && parsed.name.trim()) o.name = parsed.name.trim();
-                                } else {
+                                    stats.descSuccess++;
+                                } else if (!item.skipDescription) {
                                     o.description = text;
+                                    stats.descSuccess++;
+                                }
+                                if (options.autoClassify) {
+                                    var cls = validateClassificationResult(parsed, categories, item.fallbackClass);
+                                    o.category = cls.category || '';
+                                    o.subCategory = cls.subCategory || '';
+                                    stats.classSuccess++;
                                 }
                                 savePartition(sourcePartKey, cp);
                             }
                         }
                         if (progressCb) progressCb(done, total, errors.length > 0 && errors[errors.length - 1].name === item.name ? '❌ ' + item.name : '✅ ' + item.name);
-                        if (done >= total) { doneCb(null, done, errors); }
+                        if (done >= total) { doneCb(null, done, errors, stats); }
                         else { processNext(); }
                     });
                 })(queue[idx]);

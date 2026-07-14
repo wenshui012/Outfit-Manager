@@ -104,8 +104,11 @@ export function ensurePartDefaults(p) {
     // 分类树形迁移
     p.categories = migrateCategories(p.categories);
     p.accCategories = migrateCategories(p.accCategories);
-    // outfit kit 规范化
-    p.outfits.forEach(function (o) { ensureOutfitKits(o); });
+    // outfit kit / favorite 规范化
+    p.outfits.forEach(function (o) {
+        ensureOutfitKits(o);
+        if (o.favorite === undefined) o.favorite = false;
+    });
     return p;
 }
 

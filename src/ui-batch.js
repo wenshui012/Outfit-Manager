@@ -4,7 +4,7 @@
 import { load, save, loadMeta, loadCurrent, saveCurrent, loadPartition, savePartition, currentPartKey, currentUserPartKey, syncActivePartitions, charIdByName, isServerMode, batchResolveImages, uploadImage, getImageUrlPrefix } from './db.js';
 import { getCharData, getViewOutfits, getViewCategories, getById, getCatNames, getSubCats, partGetById, partGetAccById, cleanAccIdFromKits, SHARED_CHAR_KEY, SHARED_CHAR_LABEL } from './data.js';
 import { genId, esc, toast, getPopupLayer, compressImage } from './utils.js';
-import { batchGenerateDescriptions, batchGenerateAccDescriptions } from './api.js';
+import { batchGenerateDescriptions, batchGenerateAccDescriptions, classifyOutfitImage } from './api.js';
 import { state, fn } from './bridge.js';
 
 // 需要从 ui-sheets.js 引入的通用函数
@@ -771,12 +771,18 @@ function openBatchImportModal(files) {
     var targetPartKey = currentPartKey();
     var curPart = loadPartition(targetPartKey);
     var meta = loadMeta();
-    var curCat = (state.curCat && state.curCat !== '__all__') ? state.curCat : '';
+    var curCat = state.catDrillParent || ((state.curCat && state.curCat !== '__all__') ? state.curCat : '');
+    var curSubCat = state.catDrillParent && state.curSubCat ? state.curSubCat : '';
     var viewCats = curPart.categories || [];
     var catNames = getCatNames(viewCats);
     var catOpts = '<option value="">未分类</option>' +
         catNames.map(function (c) { return '<option value="' + esc(c) + '"' + (c === curCat ? ' selected' : '') + '>' + esc(c) + '</option>'; }).join('');
     var hasApi = !!(meta.apiVision.endpoint && meta.apiVision.key && meta.apiVision.model);
+    var classifyHtml = hasApi
+        ? (catNames.length > 0
+            ? '<label style="display:flex;align-items:center;gap:6px;font-size:.82em;cursor:pointer;margin-bottom:8px"><input type="checkbox" id="om-bimport-classify" checked /> 自动分类到现有分类</label>'
+            : '')
+        : '';
 
     var modal = document.createElement('div');
     modal.className = 'om-modal';
@@ -786,7 +792,8 @@ function openBatchImportModal(files) {
         '<div style="font-size:.82em;opacity:.7;margin-bottom:8px">已选择 ' + files.length + ' 张图片，将自动压缩</div>' +
         '<div style="display:flex;gap:6px;flex-wrap:wrap;max-height:120px;overflow-y:auto;margin-bottom:10px" id="om-bimport-preview"></div>' +
         '<div class="om-field" style="margin-bottom:8px"><label style="font-size:.82em;font-weight:600">导入到分类</label><select id="om-bimport-cat" style="background:rgba(127,127,127,.08);border:1px solid rgba(127,127,127,.2);border-radius:8px;color:inherit;padding:7px 10px;font-size:.85em;width:100%;box-sizing:border-box;font-family:inherit">' + catOpts + '</select></div>' +
-        (hasApi ? '<label style="display:flex;align-items:center;gap:6px;font-size:.82em;cursor:pointer;margin-bottom:10px"><input type="checkbox" id="om-bimport-ai" checked /> 导入后自动 AI 生成描述和名称</label>' : '<div style="font-size:.78em;opacity:.4;margin-bottom:10px">💡 配置"描述生成 API"后可自动生成描述和名称</div>') +
+        classifyHtml +
+        (hasApi ? '<label style="display:flex;align-items:center;gap:6px;font-size:.82em;cursor:pointer;margin-bottom:10px"><input type="checkbox" id="om-bimport-ai" checked /> 导入后 AI 生成描述和名称</label>' : '<div style="font-size:.78em;opacity:.4;margin-bottom:10px">💡 配置"描述生成 API"后可自动生成描述和名称</div>') +
         '<div id="om-bimport-status" style="display:none;margin:8px 0;font-size:.82em"></div>' +
         '<div class="om-btn-row" style="margin-top:6px" id="om-bimport-actions">' +
         '<button class="om-btn om-btn-safe" id="om-bimport-start"><i class="fa-solid fa-file-import"></i> 开始导入</button>' +
@@ -819,10 +826,14 @@ function openBatchImportModal(files) {
         statusEl.style.display = 'block';
 
         var cat = modal.querySelector('#om-bimport-cat').value;
+        var fallbackClass = { category: cat, subCategory: curSubCat || '' };
+        if (fallbackClass.subCategory && getSubCats(viewCats, fallbackClass.category).indexOf(fallbackClass.subCategory) === -1) fallbackClass.subCategory = '';
+        var autoClassify = hasApi && catNames.length > 0 && modal.querySelector('#om-bimport-classify') && modal.querySelector('#om-bimport-classify').checked;
         var useAI = hasApi && modal.querySelector('#om-bimport-ai') && modal.querySelector('#om-bimport-ai').checked;
         var imported = 0;
         var newIds = [];
         var importedOutfits = [];
+        var classifyFailures = 0;
 
         function prepareImageForStorage(compressed, idx, cb) {
             if (!isServerMode()) { cb(null, compressed); return; }
@@ -833,6 +844,17 @@ function openBatchImportModal(files) {
                     return;
                 }
                 cb(null, imageData);
+            });
+        }
+
+        var classifyDuringImport = autoClassify && !useAI;
+
+        function classifyImage(compressed, idx, cb) {
+            if (!classifyDuringImport) { cb(fallbackClass); return; }
+            statusEl.textContent = '自动分类中... ' + (idx + 1) + '/' + files.length;
+            classifyOutfitImage(meta.apiVision, { name: '', dataUrl: compressed }, viewCats, fallbackClass, function (err, cls) {
+                if (err) classifyFailures++;
+                cb(cls || fallbackClass);
             });
         }
 
@@ -870,14 +892,15 @@ function openBatchImportModal(files) {
                     return;
                 }
                 delete modal.dataset.running;
-                statusEl.innerHTML = '<div style="color:#4caf50;font-weight:600">✅ 已导入 ' + imported + ' 套穿搭</div>';
+                statusEl.innerHTML = '<div style="color:#4caf50;font-weight:600">✅ 已导入 ' + imported + ' 套穿搭' + (classifyDuringImport ? '，已自动分类' : '') + '</div>' +
+                    (classifyDuringImport && classifyFailures > 0 ? '<div style="opacity:.55;margin-top:4px">' + classifyFailures + ' 张分类失败，已使用默认分类</div>' : '');
                 var actionsEl = modal.querySelector('#om-bimport-actions');
                 if (useAI && newIds.length > 0) {
-                    actionsEl.innerHTML = '<button class="om-btn om-btn-safe" id="om-bimport-ai-go"><i class="fa-solid fa-wand-magic-sparkles"></i> AI 生成描述</button><button class="om-btn om-btn-outline" id="om-bimport-done">跳过</button>';
+                    actionsEl.innerHTML = '<button class="om-btn om-btn-safe" id="om-bimport-ai-go"><i class="fa-solid fa-wand-magic-sparkles"></i> ' + (autoClassify ? 'AI 生成描述并分类' : 'AI 生成描述') + '</button><button class="om-btn om-btn-outline" id="om-bimport-done">跳过</button>';
                     modal.querySelector('#om-bimport-ai-go').addEventListener('click', function () {
                         _mp.removeChild(modal);
                         fn.renderCatbar(); fn.renderGrid(); fn.renderBottomStatus();
-                        openBatchDescModal(newIds);
+                        openBatchDescModal(newIds, { autoClassify: autoClassify });
                     });
                     modal.querySelector('#om-bimport-done').addEventListener('click', function () {
                         _mp.removeChild(modal);
@@ -896,23 +919,29 @@ function openBatchImportModal(files) {
             var reader = new FileReader();
             reader.onload = function (e) {
                 compressImage(e.target.result, function (compressed) {
-                    prepareImageForStorage(compressed, i, function (err, imageData) {
-                        if (!err) {
-                            var id = genId();
-                            var newOutfit = {
-                                id: id,
-                                name: '穿搭' + (i + 1),
-                                category: cat,
-                                description: '',
-                                sceneTag: '',
-                                imageData: imageData,
-                                createdAt: Date.now()
-                            };
-                            importedOutfits[i] = newOutfit;
-                            newIds.push(id);
-                            imported++;
-                        }
-                        compressNext(i + 1);
+                    classifyImage(compressed, i, function (cls) {
+                        prepareImageForStorage(compressed, i, function (err, imageData) {
+                            if (!err) {
+                                var id = genId();
+                                var newOutfit = {
+                                    id: id,
+                                    name: '穿搭' + (i + 1),
+                                    category: cls.category || '',
+                                    subCategory: cls.subCategory || '',
+                                    description: '',
+                                    sceneTag: '',
+                                    imageData: imageData,
+                                    favorite: false,
+                                    kits: [],
+                                    activeKitId: null,
+                                    createdAt: Date.now()
+                                };
+                                importedOutfits[i] = newOutfit;
+                                newIds.push(id);
+                                imported++;
+                            }
+                            compressNext(i + 1);
+                        });
                     });
                 });
             };
@@ -924,12 +953,16 @@ function openBatchImportModal(files) {
 }
 
 // ── 批量 AI 生成描述弹窗 ──────────────────────────────────
-function openBatchDescModal(ids) {
+function openBatchDescModal(ids, defaults) {
+    defaults = defaults || {};
     var meta = loadMeta();
     var curP = loadCurrent();
     var withImg = ids.filter(function (id) { var o = partGetById(curP, id); return o && o.imageData; });
     var skipCount = ids.length - withImg.length;
     var willSkipDesc = withImg.filter(function (id) { var o = partGetById(curP, id); return o && o.description && o.description.trim() && !meta.apiVision.overwrite; }).length;
+    var descCallCount = Math.max(0, withImg.length - willSkipDesc);
+    var canAutoClassify = getCatNames(curP.categories || []).length > 0;
+    var sourcePartKey = currentPartKey();
     var modal = document.createElement('div');
     modal.className = 'om-modal';
     modal.style.setProperty('z-index', '2147483647', 'important');
@@ -940,9 +973,10 @@ function openBatchDescModal(ids) {
         (skipCount > 0 ? '，' + skipCount + ' 套无图片将跳过' : '') +
         (willSkipDesc > 0 ? '<br>' + willSkipDesc + ' 套已有描述将跳过（可在设置中开启覆盖）' : '') +
         '</div>' +
-        '<div style="font-size:.78em;opacity:.5;margin-bottom:8px">共需 ' + (withImg.length - willSkipDesc) + ' 次 API 调用</div>' +
+        '<div style="font-size:.78em;opacity:.5;margin-bottom:8px">共需 <span id="om-batch-call-count">' + descCallCount + '</span> 次 API 调用</div>' +
         '<div style="border:1px solid rgba(127,127,127,.12);border-radius:8px;padding:10px;margin-bottom:8px">' +
         '<label style="display:flex;align-items:center;gap:6px;font-size:.82em;cursor:pointer"><input type="checkbox" id="om-batch-autoname" checked /> 同时生成穿搭名称（覆盖现有名称）</label>' +
+        '<label style="display:flex;align-items:center;gap:6px;font-size:.82em;cursor:pointer;margin-top:8px"><input type="checkbox" id="om-batch-autocat"' + (canAutoClassify ? '' : ' disabled') + (defaults.autoClassify && canAutoClassify ? ' checked' : '') + ' /> 同时自动分类</label>' +
         '</div>' +
         '<div id="om-batch-progress" style="display:none;margin:10px 0">' +
         '<div style="font-size:.82em;margin-bottom:6px" id="om-batch-prog-text">准备中...</div>' +
@@ -963,6 +997,15 @@ function openBatchDescModal(ids) {
     modal.addEventListener('click', function (e) { if (e.target === modal) removeModal(); });
     modal.querySelector('#om-batch-close').addEventListener('click', function () { removeModal(); });
 
+    function updateBatchCallCount() {
+        var el = modal.querySelector('#om-batch-call-count');
+        var autoCatEl = modal.querySelector('#om-batch-autocat');
+        if (el) el.textContent = (autoCatEl && autoCatEl.checked && !autoCatEl.disabled) ? withImg.length : descCallCount;
+    }
+    var autoCatToggle = modal.querySelector('#om-batch-autocat');
+    if (autoCatToggle) autoCatToggle.addEventListener('change', updateBatchCallCount);
+    updateBatchCallCount();
+
     modal.querySelector('#om-batch-start').addEventListener('click', function () {
         modal.querySelector('#om-batch-progress').style.display = 'block';
         modal.querySelector('#om-batch-start').disabled = true;
@@ -975,8 +1018,59 @@ function openBatchDescModal(ids) {
         };
 
         var options = {
-            autoName: modal.querySelector('#om-batch-autoname').checked
+            autoName: modal.querySelector('#om-batch-autoname').checked,
+            autoClassify: modal.querySelector('#om-batch-autocat') && modal.querySelector('#om-batch-autocat').checked && !modal.querySelector('#om-batch-autocat').disabled
         };
+
+        function finishBatch(descDoneCount, descErrors, classDoneCount, classErrors, err, stats) {
+            descErrors = descErrors || [];
+            classErrors = classErrors || [];
+            stats = stats || {};
+            var descSuccess = stats.descSuccess !== undefined ? stats.descSuccess : Math.max(0, (descDoneCount || 0) - descErrors.length);
+            var classSuccess = stats.classSuccess !== undefined ? stats.classSuccess : Math.max(0, (classDoneCount || 0) - classErrors.length);
+            if (modalAlive) {
+                var bar = modal.querySelector('#om-batch-prog-bar');
+                if (bar) bar.style.width = '100%';
+                var resultEl = modal.querySelector('#om-batch-result');
+                resultEl.style.display = 'block';
+                if (err && !descDoneCount && !classDoneCount) {
+                    resultEl.innerHTML = '<div style="color:#e57373"><i class="fa-solid fa-circle-exclamation"></i> ' + esc(err) + '</div>';
+                } else {
+                    var html2 = '<div style="color:#4caf50;font-weight:600">✅ 描述生成 ' + descSuccess + ' 条</div>';
+                if (options.autoClassify) html2 += '<div style="color:#4caf50;font-weight:600;margin-top:4px">✅ 自动分类 ' + classSuccess + ' 套</div>';
+                    if (descErrors.length > 0 || classErrors.length > 0) {
+                        html2 += '<div style="color:#ff8c42;margin-top:4px">⚠️ ' + (descErrors.length + classErrors.length) + ' 个失败：</div>';
+                        descErrors.concat(classErrors).forEach(function (e) {
+                            html2 += '<div style="opacity:.6;font-size:.9em;margin-left:8px">· ' + esc(e.name) + '：' + esc(e.error) + '</div>';
+                        });
+                    }
+                    resultEl.innerHTML = html2;
+                }
+                var actionsEl = modal.querySelector('#om-batch-actions');
+                actionsEl.innerHTML = '<button class="om-btn om-btn-safe" id="om-batch-done">完成</button>';
+                modal.querySelector('#om-batch-done').addEventListener('click', function () {
+                    removeModal();
+                    fn.renderCatbar();
+                    fn.renderGrid();
+                });
+            } else {
+                var msg = 'AI 批量完成：描述 ' + descSuccess + ' 条';
+                if (options.autoClassify) msg += '，分类 ' + classSuccess + ' 套';
+                var failCount = descErrors.length + classErrors.length;
+                if (failCount > 0) msg += '，失败 ' + failCount + ' 个';
+                toast(msg);
+                fn.renderCatbar();
+                fn.renderGrid();
+            }
+        }
+
+        function runAutoClassify(descDoneCount, descErrors, descErr, descStats) {
+            if (!options.autoClassify) {
+                finishBatch(descDoneCount, descErrors, 0, [], descErr, descStats);
+                return;
+            }
+            finishBatch(descDoneCount, descErrors, descStats ? descStats.classTarget : 0, [], descErr, descStats);
+        }
 
         batchGenerateDescriptions(ids, options,
             function (done, total, msg) {
@@ -985,44 +1079,11 @@ function openBatchDescModal(ids) {
                     var bar = modal.querySelector('#om-batch-prog-bar');
                     var txt = modal.querySelector('#om-batch-prog-text');
                     if (bar) bar.style.width = pct + '%';
-                    if (txt) txt.textContent = done + '/' + total + ' ' + msg;
+                    if (txt) txt.textContent = '描述 ' + done + '/' + total + ' ' + msg;
                 }
             },
-            function (err, doneCount, errors) {
-                var successCount = (doneCount || 0) - (errors ? errors.length : 0);
-                var failCount = errors ? errors.length : 0;
-
-                if (modalAlive) {
-                    var bar = modal.querySelector('#om-batch-prog-bar');
-                    if (bar) bar.style.width = '100%';
-                    var resultEl = modal.querySelector('#om-batch-result');
-                    resultEl.style.display = 'block';
-                    if (err && !doneCount) {
-                        resultEl.innerHTML = '<div style="color:#e57373"><i class="fa-solid fa-circle-exclamation"></i> ' + esc(err) + '</div>';
-                    } else {
-                        var html2 = '<div style="color:#4caf50;font-weight:600">✅ 成功生成 ' + successCount + ' 条</div>';
-                        if (failCount > 0) {
-                            html2 += '<div style="color:#ff8c42;margin-top:4px">⚠️ ' + failCount + ' 个失败：</div>';
-                            errors.forEach(function (e) {
-                                html2 += '<div style="opacity:.6;font-size:.9em;margin-left:8px">· ' + esc(e.name) + '：' + esc(e.error) + '</div>';
-                            });
-                        }
-                        resultEl.innerHTML = html2;
-                    }
-                    var actionsEl = modal.querySelector('#om-batch-actions');
-                    actionsEl.innerHTML = '<button class="om-btn om-btn-safe" id="om-batch-done">完成</button>';
-                    modal.querySelector('#om-batch-done').addEventListener('click', function () {
-                        removeModal();
-                        fn.renderGrid();
-                    });
-                } else {
-                    if (failCount > 0) {
-                        toast('👗 AI 生成完成：' + successCount + ' 成功，' + failCount + ' 失败');
-                    } else {
-                        toast('👗 AI 生成完成：' + successCount + ' 条描述已就绪');
-                    }
-                    fn.renderGrid();
-                }
+            function (err, doneCount, errors, stats) {
+                runAutoClassify(doneCount, errors || [], err, stats);
             }
         );
     });

@@ -7,6 +7,43 @@ import { genId, esc, toast, getPopupLayer, compressImage } from './utils.js';
 import { generateSingleDescription, generateSingleAccDescription, batchGenerateDescriptions, openModelPicker, normalizeEndpoint } from './api.js';
 import { state, fn } from './bridge.js';
 
+function isImageFile(file) {
+    if (!file) return false;
+    if (file.type && file.type.indexOf('image/') === 0) return true;
+    return /\.(png|jpe?g|webp|gif|bmp|avif)$/i.test(file.name || '');
+}
+
+function getPickedImageFiles(fileList) {
+    return Array.from(fileList || []).filter(isImageFile);
+}
+
+function openImageSourcePicker(title, onAlbum, onFile) {
+    var _mp = getPopupLayer();
+    var modal = document.createElement('div');
+    modal.className = 'om-modal';
+    modal.innerHTML = '<div class="om-modal-box">' +
+        '<div class="om-modal-title">' + esc(title || '导入图片') + '</div>' +
+        '<button class="om-modal-btn" id="om-imgsrc-album"><i class="fa-solid fa-image" style="margin-right:8px;color:var(--SmartThemeQuoteColor,#7c6daf)"></i>从相册选择</button>' +
+        '<button class="om-modal-btn" id="om-imgsrc-file"><i class="fa-solid fa-folder-open" style="margin-right:8px;color:var(--SmartThemeQuoteColor,#7c6daf)"></i>从文件选择</button>' +
+        '<button class="om-modal-cancel" id="om-imgsrc-cancel">取消</button>' +
+        '</div>';
+    _mp.appendChild(modal);
+
+    function close() {
+        if (modal.parentNode) _mp.removeChild(modal);
+    }
+    modal.addEventListener('click', function (e) { if (e.target === modal) close(); });
+    modal.querySelector('#om-imgsrc-cancel').addEventListener('click', close);
+    modal.querySelector('#om-imgsrc-album').addEventListener('click', function () {
+        close();
+        if (onAlbum) onAlbum();
+    });
+    modal.querySelector('#om-imgsrc-file').addEventListener('click', function () {
+        close();
+        if (onFile) onFile();
+    });
+}
+
 // ── 长按操作菜单 Bottom Sheet ─────────────────────────────
 function openContextMenu(outfit, imgOutfits) {
     if (!outfit) return;
@@ -18,6 +55,7 @@ function openContextMenu(outfit, imgOutfits) {
         isOn
             ? '<div class="om-ctx-item" id="om-ctx-wear"><i class="fa-solid fa-circle-xmark"></i>取消选择</div>'
             : '<div class="om-ctx-item" id="om-ctx-wear"><i class="fa-solid fa-circle-check"></i>选择穿搭</div>',
+        '<div class="om-ctx-item" id="om-ctx-fav"><i class="fa-' + (outfit.favorite ? 'solid' : 'regular') + ' fa-star"></i>' + (outfit.favorite ? '取消收藏' : '收藏服装') + '</div>',
         outfit.imageData ? '<div class="om-ctx-item" id="om-ctx-view"><i class="fa-solid fa-expand"></i>查看大图</div>' : '',
         '<div class="om-ctx-item" id="om-ctx-edit"><i class="fa-solid fa-pen"></i>编辑</div>',
         '<div class="om-ctx-item" id="om-ctx-move"><i class="fa-solid fa-arrow-right-arrow-left"></i>移动到…</div>',
@@ -67,6 +105,18 @@ function openContextMenu(outfit, imgOutfits) {
         fn.updateBtn(); fn.renderBottomStatus(); fn.renderGrid();
         if (fn.preResolveActiveImages) fn.preResolveActiveImages();
         fn.closeDetailPanel();
+    });
+
+    var favEl = sheet.querySelector('#om-ctx-fav');
+    if (favEl) favEl.addEventListener('click', function () {
+        closeSheet(sheet);
+        var curP = loadCurrent();
+        var o = partGetById(curP, outfit.id);
+        if (!o) return;
+        o.favorite = !o.favorite;
+        saveCurrent(curP);
+        fn.renderGrid();
+        toast(o.favorite ? '已收藏：' + (o.name || '') : '已取消收藏');
     });
 
     var viewEl = sheet.querySelector('#om-ctx-view');
@@ -428,11 +478,13 @@ function openEditSheet(outfit, defaultCat, defaultSubCat) {
         '</div></div>',
         '<div class="om-field"><label>参考图片 <span class="om-hint">可选，自动压缩</span></label>',
         '<div class="om-imgarea" id="om-dimgarea">' + imageAreaHtml + '</div>',
-        '<input type="file" id="om-dfile" accept="image/*" style="display:none" />',
-        '<div class="om-img-actions"><button class="om-btn om-btn-outline" id="om-dpick" style="font-size:.8em"><i class="fa-solid fa-image"></i> 选择图片</button>' +
+        '<input type="file" id="om-dfile-album" accept="image/*" style="display:none" />',
+        '<input type="file" id="om-dfile-any" style="display:none" />',
+        '<div class="om-img-actions"><button class="om-btn om-btn-outline" id="om-dpick" style="font-size:.8em"><i class="fa-solid fa-image"></i> 导入图片</button>' +
         (!outfit ? '<button class="om-btn om-btn-outline" id="om-dbatch" style="font-size:.8em"><i class="fa-solid fa-images"></i> 批量导入</button>' : '') +
         (editImgData ? '<button class="om-btn om-btn-danger" id="om-dclr" style="font-size:.8em">删除图片</button>' : '') + '</div></div>',
-        '<input type="file" id="om-dbatchfile" accept="image/*" multiple style="display:none" />',
+        '<input type="file" id="om-dbatchfile-album" accept="image/*" multiple style="display:none" />',
+        '<input type="file" id="om-dbatchfile-any" multiple style="display:none" />',
         kitManageHtml,
         '<div class="om-edit-foot"><button class="om-btn om-btn-outline" id="om-dcancel">取消</button><button class="om-btn om-btn-safe" id="om-dsave">保存</button></div>',
     ].join(''));
@@ -590,7 +642,8 @@ function openEditSheet(outfit, defaultCat, defaultSubCat) {
     });
 
     // 图片处理
-    var fileInp = sheet.querySelector('#om-dfile');
+    var albumInp = sheet.querySelector('#om-dfile-album');
+    var fileInp = sheet.querySelector('#om-dfile-any');
     var imgArea = sheet.querySelector('#om-dimgarea');
     function setImg(data) {
         editImgData = data;
@@ -602,30 +655,49 @@ function openEditSheet(outfit, defaultCat, defaultSubCat) {
         } else if (!data && clrOld) clrOld.parentNode.removeChild(clrOld);
     }
     function handleFile(f) {
-        if (!f || f.type.indexOf('image') !== 0) return;
+        if (!isImageFile(f)) { toast('请选择图片文件', true); return; }
         var r = new FileReader(); r.onload = function (e) { compressImage(e.target.result, function (c) { setImg(c); }); }; r.readAsDataURL(f);
     }
-    sheet.querySelector('#om-dpick').addEventListener('click', function () { fileInp.click(); });
-    imgArea.addEventListener('click', function () { fileInp.click(); });
-    fileInp.addEventListener('change', function () { if (fileInp.files[0]) handleFile(fileInp.files[0]); });
+    function bindSingleImageInput(inp) {
+        if (!inp) return;
+        inp.addEventListener('change', function () {
+            var files = getPickedImageFiles(inp.files);
+            if (files[0]) handleFile(files[0]);
+            else if (inp.files && inp.files.length) toast('请选择图片文件', true);
+            inp.value = '';
+        });
+    }
+    function openSingleImagePicker() {
+        openImageSourcePicker('导入图片', function () { albumInp.click(); }, function () { fileInp.click(); });
+    }
+    sheet.querySelector('#om-dpick').addEventListener('click', openSingleImagePicker);
+    imgArea.addEventListener('click', openSingleImagePicker);
+    bindSingleImageInput(albumInp);
+    bindSingleImageInput(fileInp);
     imgArea.addEventListener('dragover', function (e) { e.preventDefault(); imgArea.classList.add('drag'); });
     imgArea.addEventListener('dragleave', function () { imgArea.classList.remove('drag'); });
-    imgArea.addEventListener('drop', function (e) { e.preventDefault(); imgArea.classList.remove('drag'); if (e.dataTransfer && e.dataTransfer.files[0]) handleFile(e.dataTransfer.files[0]); });
+    imgArea.addEventListener('drop', function (e) { e.preventDefault(); imgArea.classList.remove('drag'); if (e.dataTransfer) handleFile(getPickedImageFiles(e.dataTransfer.files)[0]); });
     var clr = sheet.querySelector('#om-dclr'); if (clr) clr.addEventListener('click', function () { setImg(null); });
 
     // 批量导入按钮
     var batchBtn = sheet.querySelector('#om-dbatch');
-    var batchFileInp = sheet.querySelector('#om-dbatchfile');
-    if (batchBtn && batchFileInp) {
-        batchBtn.addEventListener('click', function () { batchFileInp.click(); });
-        batchFileInp.addEventListener('change', function () {
-            var files = Array.from(batchFileInp.files || []).filter(function (f) { return f.type.indexOf('image') === 0; });
-            if (files.length === 0) { toast('未选择图片', true); return; }
+    var batchAlbumInp = sheet.querySelector('#om-dbatchfile-album');
+    var batchFileInp = sheet.querySelector('#om-dbatchfile-any');
+    if (batchBtn) batchBtn.addEventListener('click', function () {
+        openImageSourcePicker('批量导入', function () { batchAlbumInp.click(); }, function () { batchFileInp.click(); });
+    });
+    function bindBatchImageInput(inp) {
+        if (!inp) return;
+        inp.addEventListener('change', function () {
+            var files = getPickedImageFiles(inp.files);
+            if (files.length === 0) { toast('未选择图片', true); inp.value = ''; return; }
             closeSheet(sheet);
             fn.openBatchImportModal(files);
-            batchFileInp.value = '';
+            inp.value = '';
         });
     }
+    bindBatchImageInput(batchAlbumInp);
+    bindBatchImageInput(batchFileInp);
 
     // AI 生成描述按钮
     sheet.querySelector('#om-daidesc').addEventListener('click', function () {
@@ -753,6 +825,9 @@ function openPresetsSheet() {
         presetListHtml,
         '<div class="om-divider"></div>',
         saveSection,
+        '<div class="om-divider"></div>',
+        '<div class="om-sec-title">空白预设</div>',
+        '<button class="om-btn om-btn-outline" id="om-preset-empty" style="width:100%"><i class="fa-regular fa-square-plus"></i> 新建空白预设</button>',
     ].join(''));
 
     // 覆盖保存到当前预设
@@ -784,6 +859,48 @@ function openPresetsSheet() {
         save(dd); dd = load(); dd.activePresetId = newId; save(dd); inp.value = ''; closeSheet(sheet); toast('✨ 预设「' + name + '」已保存'); openPresetsSheet();
     });
     inp.addEventListener('keydown', function (e) { if (e.key === 'Enter') sheet.querySelector('#om-preset-save').click(); });
+
+    var emptyBtn = sheet.querySelector('#om-preset-empty');
+    if (emptyBtn) emptyBtn.addEventListener('click', function () {
+        var dd = load();
+        if (!Array.isArray(dd.presets)) dd.presets = [];
+        var base = '空白预设';
+        var names = dd.presets.map(function (p) { return p && p.name; });
+        var defaultName = base;
+        var n = 2;
+        while (names.indexOf(defaultName) !== -1) { defaultName = base + ' ' + n; n++; }
+        var name = prompt('空白预设名称：', defaultName);
+        if (name === null) return;
+        name = name.trim();
+        if (!name) { toast('请输入预设名称', true); return; }
+        if (!confirm('创建并加载「' + name + '」？这会清空当前衣柜内容和分类。')) return;
+        var newId = genId();
+        dd.presets.push({
+            id: newId,
+            name: name,
+            createdAt: Date.now(),
+            outfits: [],
+            categories: [],
+            activeIds: [],
+            accessories: [],
+            accCategories: []
+        });
+        dd.outfits = [];
+        dd.categories = [];
+        dd.activeIds = [];
+        dd.accessories = [];
+        dd.accCategories = [];
+        dd.activePresetId = newId;
+        save(dd);
+        closeSheet(sheet);
+        fn.renderViewbar();
+        fn.renderCatbar();
+        fn.renderAccCatbar();
+        fn.renderGrid();
+        fn.renderBottomStatus();
+        fn.updateBtn();
+        toast('✨ 已创建空白预设「' + name + '」');
+    });
 
     // 加载预设
     sheet.querySelectorAll('.om-preset-item').forEach(function (item) {
@@ -1707,11 +1824,13 @@ function openAccEditSheet(acc, defaultCat) {
         '<button class="om-btn om-btn-outline" id="om-acc-dai" style="font-size:.78em;margin-top:5px;align-self:flex-start"><i class="fa-solid fa-wand-magic-sparkles"></i> AI 生成描述</button></div>',
         '<div class="om-field"><label>参考图片 <span class="om-hint">可选，自动压缩</span></label>',
         '<div class="om-imgarea" id="om-acc-dimgarea">' + (editImgData ? '<img src="' + editImgData + '" />' : '<div class="om-imgph"><i class="fa-regular fa-image"></i><span>点击或拖拽上传</span></div>') + '</div>',
-        '<input type="file" id="om-acc-dfile" accept="image/*" style="display:none" />',
-        '<div class="om-img-actions"><button class="om-btn om-btn-outline" id="om-acc-dpick" style="font-size:.8em"><i class="fa-solid fa-image"></i> 选择图片</button>' +
+        '<input type="file" id="om-acc-dfile-album" accept="image/*" style="display:none" />',
+        '<input type="file" id="om-acc-dfile-any" style="display:none" />',
+        '<div class="om-img-actions"><button class="om-btn om-btn-outline" id="om-acc-dpick" style="font-size:.8em"><i class="fa-solid fa-image"></i> 导入图片</button>' +
         (!acc ? '<button class="om-btn om-btn-outline" id="om-acc-dbatch" style="font-size:.8em"><i class="fa-solid fa-images"></i> 批量导入</button>' : '') +
         (editImgData ? '<button class="om-btn om-btn-danger" id="om-acc-dclr" style="font-size:.8em">删除图片</button>' : '') + '</div></div>',
-        '<input type="file" id="om-acc-dbatchfile" accept="image/*" multiple style="display:none" />',
+        '<input type="file" id="om-acc-dbatchfile-album" accept="image/*" multiple style="display:none" />',
+        '<input type="file" id="om-acc-dbatchfile-any" multiple style="display:none" />',
         '<div class="om-edit-foot"><button class="om-btn om-btn-outline" id="om-acc-dcancel">取消</button><button class="om-btn om-btn-safe" id="om-acc-dsave">保存</button></div>',
     ].join(''));
 
@@ -1739,7 +1858,8 @@ function openAccEditSheet(acc, defaultCat) {
     });
 
     // 图片处理
-    var fileInp = sheet.querySelector('#om-acc-dfile');
+    var albumInp = sheet.querySelector('#om-acc-dfile-album');
+    var fileInp = sheet.querySelector('#om-acc-dfile-any');
     var imgArea = sheet.querySelector('#om-acc-dimgarea');
     function setImg(data) {
         editImgData = data;
@@ -1751,15 +1871,28 @@ function openAccEditSheet(acc, defaultCat) {
         } else if (!data && clrOld) clrOld.parentNode.removeChild(clrOld);
     }
     function handleFile(f) {
-        if (!f || f.type.indexOf('image') !== 0) return;
+        if (!isImageFile(f)) { toast('请选择图片文件', true); return; }
         var r = new FileReader(); r.onload = function (e) { compressImage(e.target.result, function (c) { setImg(c); }); }; r.readAsDataURL(f);
     }
-    sheet.querySelector('#om-acc-dpick').addEventListener('click', function () { fileInp.click(); });
-    imgArea.addEventListener('click', function () { fileInp.click(); });
-    fileInp.addEventListener('change', function () { if (fileInp.files[0]) handleFile(fileInp.files[0]); });
+    function bindSingleAccImageInput(inp) {
+        if (!inp) return;
+        inp.addEventListener('change', function () {
+            var files = getPickedImageFiles(inp.files);
+            if (files[0]) handleFile(files[0]);
+            else if (inp.files && inp.files.length) toast('请选择图片文件', true);
+            inp.value = '';
+        });
+    }
+    function openSingleAccImagePicker() {
+        openImageSourcePicker('导入图片', function () { albumInp.click(); }, function () { fileInp.click(); });
+    }
+    sheet.querySelector('#om-acc-dpick').addEventListener('click', openSingleAccImagePicker);
+    imgArea.addEventListener('click', openSingleAccImagePicker);
+    bindSingleAccImageInput(albumInp);
+    bindSingleAccImageInput(fileInp);
     imgArea.addEventListener('dragover', function (e) { e.preventDefault(); imgArea.classList.add('drag'); });
     imgArea.addEventListener('dragleave', function () { imgArea.classList.remove('drag'); });
-    imgArea.addEventListener('drop', function (e) { e.preventDefault(); imgArea.classList.remove('drag'); if (e.dataTransfer && e.dataTransfer.files[0]) handleFile(e.dataTransfer.files[0]); });
+    imgArea.addEventListener('drop', function (e) { e.preventDefault(); imgArea.classList.remove('drag'); if (e.dataTransfer) handleFile(getPickedImageFiles(e.dataTransfer.files)[0]); });
     var clr = sheet.querySelector('#om-acc-dclr'); if (clr) clr.addEventListener('click', function () { setImg(null); });
 
     var accAiBtn = sheet.querySelector('#om-acc-dai');
@@ -1786,19 +1919,25 @@ function openAccEditSheet(acc, defaultCat) {
 
     // 批量导入按钮
     var accBatchBtn = sheet.querySelector('#om-acc-dbatch');
-    var accBatchFileInp = sheet.querySelector('#om-acc-dbatchfile');
-    if (accBatchBtn && accBatchFileInp) {
-        accBatchBtn.addEventListener('click', function () { accBatchFileInp.click(); });
-        accBatchFileInp.addEventListener('change', function () {
-            var files = Array.from(accBatchFileInp.files || []).filter(function (f) { return f.type.indexOf('image') === 0; });
-            if (files.length === 0) { toast('未选择图片', true); return; }
+    var accBatchAlbumInp = sheet.querySelector('#om-acc-dbatchfile-album');
+    var accBatchFileInp = sheet.querySelector('#om-acc-dbatchfile-any');
+    if (accBatchBtn) accBatchBtn.addEventListener('click', function () {
+        openImageSourcePicker('批量导入', function () { accBatchAlbumInp.click(); }, function () { accBatchFileInp.click(); });
+    });
+    function bindAccBatchImageInput(inp) {
+        if (!inp) return;
+        inp.addEventListener('change', function () {
+            var files = getPickedImageFiles(inp.files);
+            if (files.length === 0) { toast('未选择图片', true); inp.value = ''; return; }
             var cat = sheet.querySelector('#om-acc-dcat').value || '';
             var subCat = sheet.querySelector('#om-acc-dsubcat') ? sheet.querySelector('#om-acc-dsubcat').value || '' : '';
             closeSheet(sheet);
             openAccBatchImportModal(files, cat, subCat);
-            accBatchFileInp.value = '';
+            inp.value = '';
         });
     }
+    bindAccBatchImageInput(accBatchAlbumInp);
+    bindAccBatchImageInput(accBatchFileInp);
 
     // 新建分类
     sheet.querySelector('#om-acc-dnewcat').addEventListener('click', function () {

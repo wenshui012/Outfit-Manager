@@ -7,6 +7,10 @@ import { SHARED_CHAR_KEY, partGetById, getActiveKit, getKitAccessories } from '.
 import { toast } from './utils.js';
 import { state } from './bridge.js';
 
+var BAIBAOKU_SAVE_GENERATE_PATH = '/api/plugins/baibaoku/v1/chats/save-generate';
+var RECENT_INJECTED_BODY_TTL = 2 * 60 * 1000;
+var recentInjectedBodies = [];
+
 // 获取注入用的图片URL（server模式下优先用预解析的base64）
 function getInjectImageUrl(outfit) {
     if (!outfit || !outfit.imageData) return null;
@@ -115,9 +119,59 @@ function injectImageBlocks(p, ownerImageGroups, imgPrompt, multiImgPrompt) {
 }
 
 // ── 请求体注入逻辑（v2：基于 meta + activePartitions）──
-function tryInjectBody(bodyStr) {
-    var p; try { p = JSON.parse(bodyStr); } catch (e) { return null; }
-    if (!p || (!p.messages && p.prompt === undefined)) return null;
+function markPayloadInjected(p) {
+    try {
+        Object.defineProperty(p, '__omInjected', { value: true, configurable: true });
+    } catch (e) {}
+}
+
+function cleanupRecentInjectedBodies(now) {
+    var t = now || Date.now();
+    recentInjectedBodies = recentInjectedBodies.filter(function (item) {
+        return item && (t - item.at) < RECENT_INJECTED_BODY_TTL;
+    });
+}
+
+function rememberInjectedBody(p) {
+    try {
+        cleanupRecentInjectedBodies();
+        recentInjectedBodies.push({ body: JSON.stringify(p), at: Date.now() });
+        if (recentInjectedBodies.length > 20) recentInjectedBodies.shift();
+    } catch (e) {}
+}
+
+function wasRecentlyInjectedBody(bodyStr) {
+    cleanupRecentInjectedBodies();
+    for (var i = 0; i < recentInjectedBodies.length; i++) {
+        if (recentInjectedBodies[i].body === bodyStr) return true;
+    }
+    return false;
+}
+
+function getFetchUrl(input) {
+    try {
+        if (typeof input === 'string') return input;
+        if (input instanceof URL) return input.href;
+        if (input && typeof input.url === 'string') return input.url;
+    } catch (e) {}
+    return '';
+}
+
+function isBaibaokuSaveGenerateRequest(input) {
+    try {
+        var rawUrl = getFetchUrl(input);
+        if (!rawUrl) return false;
+        var url = new URL(rawUrl, location.href);
+        return url.origin === location.origin && url.pathname === BAIBAOKU_SAVE_GENERATE_PATH;
+    } catch (e) {
+        return false;
+    }
+}
+
+function tryInjectPayload(p) {
+    if (!p || typeof p !== 'object' || Array.isArray(p)) return false;
+    if (p.__omInjected) return false;
+    if (!p.messages && p.prompt === undefined) return false;
 
     var meta = loadMeta();
     var pos = meta.injectPosition || 'user';
@@ -300,7 +354,49 @@ function tryInjectBody(bodyStr) {
         toast('👗 ' + summary + ' [' + meta.mode + '|' + pos + ']');
     }
 
-    return injected ? JSON.stringify(p) : null;
+    if (injected) markPayloadInjected(p);
+    return injected;
+}
+
+function tryInjectBody(bodyStr, options) {
+    if (wasRecentlyInjectedBody(bodyStr)) return null;
+
+    var p; try { p = JSON.parse(bodyStr); } catch (e) { return null; }
+    if (tryInjectPayload(p)) return JSON.stringify(p);
+
+    if (options && options.baibaokuSaveGenerate && p && p.generate && typeof p.generate === 'object') {
+        var nestedBody = '';
+        try { nestedBody = JSON.stringify(p.generate); } catch (e) {}
+        if (nestedBody && wasRecentlyInjectedBody(nestedBody)) return null;
+        if (tryInjectPayload(p.generate)) return JSON.stringify(p);
+    }
+
+    return null;
+}
+
+function registerCompletionEventInjection() {
+    if (window.__omCompletionEventInjectionInstalled) return;
+    window.__omCompletionEventInjectionInstalled = true;
+
+    import('/script.js').then(function (mod) {
+        var eventSource = mod && mod.eventSource;
+        var eventTypes = mod && mod.event_types;
+        var eventName = eventTypes && eventTypes.CHAT_COMPLETION_SETTINGS_READY;
+        if (!eventSource || !eventName || typeof eventSource.on !== 'function') return;
+
+        var handler = function (payload) {
+            try {
+                if (tryInjectPayload(payload)) rememberInjectedBody(payload);
+            } catch (e) {}
+        };
+
+        eventSource.on(eventName, handler);
+        if (typeof eventSource.makeFirst === 'function') {
+            eventSource.makeFirst(eventName, handler);
+        }
+    }).catch(function () {
+        window.__omCompletionEventInjectionInstalled = false;
+    });
 }
 
 // ── 安装拦截器 ─────────────────────────────────────────
@@ -308,6 +404,8 @@ export function setupInjection() {
     // 防止重复安装（热重载等场景）
     if (window.__omInjectionInstalled) return;
     window.__omInjectionInstalled = true;
+
+    registerCompletionEventInjection();
 
     var origFetch = window.fetch;
     window.fetch = function (input, init) {
@@ -317,7 +415,7 @@ export function setupInjection() {
                 return origFetch.apply(this, arguments);
             }
             if (init && init.body && typeof init.body === 'string') {
-                var nb = tryInjectBody(init.body);
+                var nb = tryInjectBody(init.body, { baibaokuSaveGenerate: isBaibaokuSaveGenerateRequest(input) });
                 if (nb) { init = Object.assign({}, init, { body: nb }); return origFetch.call(this, input, init); }
             }
         } catch (e) {}

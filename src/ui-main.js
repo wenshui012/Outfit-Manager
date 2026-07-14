@@ -22,6 +22,7 @@ import {
 } from './data.js';
 import { genId, esc, toast, getPopupLayer } from './utils.js';
 import { injectStyles } from './styles.js';
+import { batchClassifyOutfits } from './api.js';
 import { state, fn } from './bridge.js';
 import { OM_VERSION } from './version.js';
 
@@ -123,6 +124,101 @@ function ensureKitFocusForAccMode(showToast) {
         toast(active.length === 0 ? '请先选择一套穿搭' : '当前衣柜有多套已选穿搭，请在底栏点一个主体', true);
     }
     return false;
+}
+
+function openAutoClassifyModal(ids) {
+    var meta = loadMeta();
+    var apiCfg = meta.apiVision || {};
+    if (!apiCfg.endpoint || !apiCfg.key || !apiCfg.model) {
+        toast('请先在设置中配置"描述生成 API"', true);
+        return;
+    }
+    var sourcePartKey = currentPartKey();
+    var sourcePart = loadPartition(sourcePartKey);
+    var cats = sourcePart.categories || [];
+    if (getCatNames(cats).length === 0) {
+        toast('还没有分类，无法自动分类', true);
+        return;
+    }
+    var queue = uniqueIds(ids).map(function (id) { return partGetById(sourcePart, id); })
+        .filter(function (o) { return o && o.imageData; });
+    if (queue.length === 0) {
+        toast('所选穿搭中没有带图片的', true);
+        return;
+    }
+
+    var _mp = getPopupLayer();
+    var modal = document.createElement('div');
+    modal.className = 'om-modal';
+    modal.style.cssText = 'position:absolute !important;inset:0 !important;z-index:1 !important;background:rgba(0,0,0,.45) !important;display:flex !important;align-items:center !important;justify-content:center !important;padding:20px !important;box-sizing:border-box !important;pointer-events:auto !important;';
+    modal.dataset.running = '1';
+    modal.innerHTML = '<div class="om-modal-box">' +
+        '<div class="om-modal-title"><i class="fa-solid fa-wand-magic-sparkles" style="margin-right:6px;color:var(--SmartThemeQuoteColor,#7c6daf)"></i>自动分类</div>' +
+        '<div class="om-hint">只根据图片判断分类，不生成描述或名称</div>' +
+        '<div id="om-autocat-status" style="font-size:.82em;margin-top:4px">准备中...</div>' +
+        '<div style="height:6px;background:rgba(127,127,127,.15);border-radius:3px;overflow:hidden;margin:3px 0 6px">' +
+        '<div id="om-autocat-bar" style="height:100%;width:0%;background:var(--SmartThemeQuoteColor,#7c6daf);border-radius:3px;transition:width .25s"></div></div>' +
+        '<div id="om-autocat-result" style="font-size:.78em;opacity:.62;max-height:120px;overflow-y:auto"></div>' +
+        '<div class="om-btn-row" style="margin-top:10px" id="om-autocat-actions">' +
+        '<button class="om-btn om-btn-outline" id="om-autocat-close">后台运行</button></div></div>';
+    _mp.appendChild(modal);
+
+    var modalAlive = true;
+    function removeModal() {
+        if (modalAlive && modal.parentNode) {
+            modal.parentNode.removeChild(modal);
+            modalAlive = false;
+        }
+    }
+    var statusEl = modal.querySelector('#om-autocat-status');
+    var barEl = modal.querySelector('#om-autocat-bar');
+    var resultEl = modal.querySelector('#om-autocat-result');
+    var closeBtn = modal.querySelector('#om-autocat-close');
+    modal.addEventListener('click', function (e) {
+        if (e.target === modal && !modal.dataset.running) removeModal();
+    });
+    closeBtn.onclick = function () {
+        removeModal();
+        toast('自动分类正在后台运行，完成后会通知');
+    };
+
+    function appendResult(text, ok) {
+        if (!modalAlive) return;
+        var row = document.createElement('div');
+        row.style.cssText = 'padding:2px 0;color:' + (ok ? 'inherit' : '#e57373');
+        row.textContent = text;
+        resultEl.appendChild(row);
+        resultEl.scrollTop = resultEl.scrollHeight;
+    }
+    batchClassifyOutfits(ids,
+        function (done, total, msg) {
+            var pct = total > 0 ? Math.round(done / total * 100) : 0;
+            if (modalAlive) {
+                statusEl.textContent = done + '/' + total + ' ' + msg;
+                barEl.style.width = pct + '%';
+            }
+            appendResult(msg, msg.indexOf('❌') !== 0);
+        },
+        function (err, doneCount, errors) {
+            var failCount = errors ? errors.length : 0;
+            var successCount = (doneCount || 0) - failCount;
+            delete modal.dataset.running;
+            state.batchSelected = [];
+            fn.renderCatbar();
+            renderGrid();
+            renderBottomStatus();
+            fn.updateBtn();
+            if (modalAlive) {
+                barEl.style.width = '100%';
+                statusEl.textContent = err ? err : ('完成：已分类 ' + successCount + ' 套' + (failCount ? '，失败 ' + failCount + ' 套' : ''));
+                closeBtn.textContent = '完成';
+                closeBtn.className = 'om-btn om-btn-safe';
+                closeBtn.onclick = function () { removeModal(); };
+            } else {
+                toast(err ? ('自动分类失败：' + err) : ('自动分类完成：' + successCount + ' 套' + (failCount ? '，失败 ' + failCount + ' 套' : '')));
+            }
+        }
+    );
 }
 
 function draftHasAcc(accId) {
@@ -978,6 +1074,14 @@ function renderGrid() {
     }
     if (state.filterNoTag) { list = list.filter(function (o) { return !o.sceneTag || !o.sceneTag.trim(); }); }
     if (state.filterNoDesc) { list = list.filter(function (o) { return !o.description || !o.description.trim(); }); }
+    var originalOrder = {};
+    allOutfits.forEach(function (o, idx) { if (o && o.id) originalOrder[o.id] = idx; });
+    list = list.slice().sort(function (a, b) {
+        var af = a && a.favorite ? 1 : 0;
+        var bf = b && b.favorite ? 1 : 0;
+        if (af !== bf) return bf - af;
+        return (originalOrder[a.id] || 0) - (originalOrder[b.id] || 0);
+    });
     var imgOutfits = list.filter(function (o) { return !!o.imageData; });
 
     // 批量操作栏
@@ -1035,11 +1139,12 @@ function renderGrid() {
                     '</div>';
             }
 
-            var menuBtn = state.batchMode ? '' : '<button class="om-card-menu" data-id="' + o.id + '" title="操作"><i class="fa-solid fa-ellipsis-vertical"></i></button>';
+            var favMark = (!state.batchMode && o.favorite) ? '<div class="om-card-fav-mark" title="已收藏"><i class="fa-solid fa-star"></i></div>' : '';
+            var menuBtn = state.batchMode ? '' : '<button class="om-card-menu" data-id="' + o.id + '" title="操作"><i class="fa-solid fa-ellipsis"></i></button>';
             var tagText = (o.sceneTag && o.sceneTag.trim()) ? o.sceneTag.trim() : '';
             html += '<div class="om-card' + (on ? ' on' : '') + (bsel ? ' batch-sel' : '') + (o.imageData ? '' : ' no-img') + '" data-id="' + o.id + '">' +
                 '<div class="om-card-img">' +
-                checkBox + imgContent + badge + menuBtn +
+                checkBox + imgContent + favMark + badge + menuBtn +
                 '</div>' +
                 '<div class="om-card-info">' +
                 '<div class="om-card-name">' + esc(o.name) + '</div>' +
@@ -1077,41 +1182,88 @@ function renderGrid() {
             var cats = curPart.categories || [];
             var catNames = getCatNames(cats);
             if (catNames.length === 0) { toast('还没有分类，请先在设置中添加', true); return; }
-            var itemsHtml = '';
-            cats.forEach(function (catObj) {
-                var catName = typeof catObj === 'object' ? catObj.name : catObj;
-                var children = typeof catObj === 'object' ? (catObj.children || []) : [];
-                var n = curPart.outfits.filter(function (o) { return o.category === catName; }).length;
-                itemsHtml += '<div class="om-cat-item om-bcat-pick" data-cat="' + esc(catName) + '" data-sub="" style="cursor:pointer;font-weight:600"><span class="om-cat-name">' + esc(catName) + '</span><span class="om-cat-count">' + n + '套</span></div>';
-                children.forEach(function (sc) {
-                    var sn = curPart.outfits.filter(function (o) { return o.category === catName && o.subCategory === sc; }).length;
-                    itemsHtml += '<div class="om-cat-item om-bcat-pick" data-cat="' + esc(catName) + '" data-sub="' + esc(sc) + '" style="cursor:pointer;padding-left:28px;opacity:.85"><span class="om-cat-name"><i class="fa-solid fa-turn-up fa-rotate-90" style="font-size:.6em;opacity:.3;margin-right:6px"></i>' + esc(sc) + '</span><span class="om-cat-count">' + sn + '套</span></div>';
+            var expandedCats = {};
+            function buildBatchCategoryList() {
+                var itemsHtml = '';
+                cats.forEach(function (catObj, catIdx) {
+                    var catName = typeof catObj === 'object' ? catObj.name : catObj;
+                    var children = typeof catObj === 'object' ? (catObj.children || []) : [];
+                    var n = curPart.outfits.filter(function (o) { return o.category === catName; }).length;
+                    var isExpanded = !!expandedCats[catIdx];
+                    var chevron = children.length > 0
+                        ? '<i class="fa-solid fa-chevron-' + (isExpanded ? 'down' : 'right') + ' om-cat-chevron"></i>'
+                        : '<span class="om-cat-chevron-placeholder"></span>';
+                    itemsHtml += '<div class="om-cat-item om-bcat-parent" data-idx="' + catIdx + '" data-cat="' + esc(catName) + '" style="cursor:pointer;font-weight:600">' +
+                        chevron + '<span class="om-cat-name">' + esc(catName) + '</span><span class="om-cat-count">' + n + '套</span>' +
+                        '<button class="om-btn-sm om-bcat-parent-pick" data-cat="' + esc(catName) + '" title="选择父分类"><i class="fa-solid fa-check"></i></button></div>';
+                    if (isExpanded) {
+                        children.forEach(function (sc) {
+                            var sn = curPart.outfits.filter(function (o) { return o.category === catName && o.subCategory === sc; }).length;
+                            itemsHtml += '<div class="om-cat-item om-bcat-pick om-cat-child" data-cat="' + esc(catName) + '" data-sub="' + esc(sc) + '" style="cursor:pointer;padding-left:32px;opacity:.85"><span class="om-cat-name"><i class="fa-solid fa-turn-up fa-rotate-90" style="font-size:.6em;opacity:.3;margin-right:6px"></i>' + esc(sc) + '</span><span class="om-cat-count">' + sn + '套</span></div>';
+                        });
+                    }
                 });
-            });
+                return itemsHtml;
+            }
             var catSheet = fn.createSheet([
                 '<div class="om-sheet-title"><i class="fa-solid fa-folder"></i>选择分类</div>',
                 '<div class="om-hint" style="margin-bottom:10px">为已选 ' + state.batchSelected.length + ' 套穿搭设置分类</div>',
-                itemsHtml,
+                '<div id="om-bcat-list">' + buildBatchCategoryList() + '</div>',
                 '<div class="om-divider"></div>',
-                '<div class="om-cat-item om-bcat-pick" data-cat="" data-sub="" style="cursor:pointer;opacity:.6"><span class="om-cat-name">清除分类</span></div>',
+                '<div class="om-cat-item" id="om-bcat-auto" style="cursor:pointer"><span class="om-cat-name"><i class="fa-solid fa-wand-magic-sparkles" style="opacity:.55;margin-right:7px"></i>自动分类</span><span class="om-cat-count">AI</span></div>',
+                '<div class="om-cat-item" id="om-bcat-clear" style="cursor:pointer;opacity:.6"><span class="om-cat-name">清除分类</span></div>',
             ].join(''));
-            catSheet.querySelectorAll('.om-bcat-pick').forEach(function (item) {
-                item.addEventListener('click', function () {
-                    var targetCat = item.dataset.cat;
-                    var targetSub = item.dataset.sub;
-                    var p2 = loadCurrent();
-                    p2.outfits.forEach(function (o) {
-                        if (state.batchSelected.indexOf(o.id) !== -1) {
-                            o.category = targetCat;
-                            o.subCategory = targetSub || '';
+            function bindBatchCategoryList() {
+                var listEl = catSheet.querySelector('#om-bcat-list');
+                if (!listEl) return;
+                listEl.innerHTML = buildBatchCategoryList();
+                listEl.querySelectorAll('.om-bcat-parent').forEach(function (row) {
+                    row.addEventListener('click', function () {
+                        var idx = parseInt(row.dataset.idx);
+                        var catObj = cats[idx];
+                        var children = typeof catObj === 'object' ? (catObj.children || []) : [];
+                        if (children.length > 0) {
+                            expandedCats[idx] = !expandedCats[idx];
+                            bindBatchCategoryList();
+                            return;
                         }
+                        applyBatchCategory(row.dataset.cat, '');
                     });
-                    saveCurrent(p2); fn.closeSheet(catSheet);
-                    var label = targetCat ? (targetSub ? '「' + targetCat + ' > ' + targetSub + '」' : '「' + targetCat + '」') : '清除分类';
-                    toast('✅ 已将 ' + state.batchSelected.length + ' 套' + (targetCat ? '移到' + label : label));
-                    state.batchSelected = []; renderGrid();
                 });
+                listEl.querySelectorAll('.om-bcat-parent-pick').forEach(function (btn) {
+                    btn.addEventListener('click', function (e) {
+                        e.stopPropagation();
+                        applyBatchCategory(btn.dataset.cat, '');
+                    });
+                });
+                listEl.querySelectorAll('.om-bcat-pick').forEach(function (item) {
+                    item.addEventListener('click', function () {
+                        applyBatchCategory(item.dataset.cat, item.dataset.sub || '');
+                    });
+                });
+            }
+            function applyBatchCategory(targetCat, targetSub) {
+                var p2 = loadCurrent();
+                p2.outfits.forEach(function (o) {
+                    if (state.batchSelected.indexOf(o.id) !== -1) {
+                        o.category = targetCat;
+                        o.subCategory = targetSub || '';
+                    }
+                });
+                saveCurrent(p2); fn.closeSheet(catSheet);
+                var label = targetCat ? (targetSub ? '「' + targetCat + ' > ' + targetSub + '」' : '「' + targetCat + '」') : '清除分类';
+                toast('✅ 已将 ' + state.batchSelected.length + ' 套' + (targetCat ? '移到' + label : label));
+                state.batchSelected = []; renderGrid();
+            }
+            var autoCatBtn = catSheet.querySelector('#om-bcat-auto');
+            if (autoCatBtn) autoCatBtn.addEventListener('click', function () {
+                var ids = state.batchSelected.slice();
+                fn.closeSheet(catSheet);
+                openAutoClassifyModal(ids);
             });
+            bindBatchCategoryList();
+            var clearCatBtn = catSheet.querySelector('#om-bcat-clear');
+            if (clearCatBtn) clearCatBtn.addEventListener('click', function () { applyBatchCategory('', ''); });
         });
         if (btagBtn) btagBtn.addEventListener('click', function () {
             if (state.batchSelected.length === 0) { toast('请先选择穿搭', true); return; }
@@ -1335,7 +1487,7 @@ function renderAccGrid(area, part) {
                     '<i class="fa-solid fa-gem om-noimg-icon"></i>' +
                     '</div>';
             }
-            var menuBtn = state.batchMode ? '' : '<button class="om-card-menu" data-acc-id="' + esc(a.id) + '" title="操作"><i class="fa-solid fa-ellipsis-vertical"></i></button>';
+            var menuBtn = state.batchMode ? '' : '<button class="om-card-menu" data-acc-id="' + esc(a.id) + '" title="操作"><i class="fa-solid fa-ellipsis"></i></button>';
             html += '<div class="om-card' + (a.imageData ? '' : ' no-img') + (selected ? ' kit-selected' : '') + (bsel ? ' batch-sel' : '') + ' om-acc-card" data-acc-id="' + esc(a.id) + '">' +
                 '<div class="om-card-img">' +
                 checkBox + imgContent +
