@@ -131,7 +131,8 @@ function buildClassificationPrompt(categories) {
     return [
         '你是穿搭图片分类助手。请只根据图片判断它最适合放进哪个现有分类。',
         '只能从下面列出的现有分类和子分类中选择，不能新增、改写、翻译或猜造分类。',
-        '如果不确定，选择最接近的父分类，subCategory 可以为空字符串。',
+        'category 必须是非空的现有父分类，禁止返回空字符串、null、无分类、未分类或 unknown。',
+        '即使不确定，也必须选择最接近的父分类；只有 subCategory 可以为空字符串。',
         '只回复 JSON，不要代码块：{"category":"现有父分类","subCategory":"现有子分类或空字符串","confidence":0.0}',
         '',
         '现有分类：',
@@ -153,24 +154,48 @@ function buildCombinedDescriptionPrompt(descriptionPrompt, categories) {
         '穿搭描述要求：',
         descriptionPrompt || '生成穿搭名称和服装描述。',
         '',
-        '分类要求：只能从下面列出的现有分类和子分类中选择，不能新增、改写、翻译或猜造分类。如果不确定，选择最接近的父分类，subCategory 可以为空字符串。',
+        '分类要求：只能从下面列出的现有分类和子分类中选择，不能新增、改写、翻译或猜造分类。category 必须是非空的现有父分类，禁止返回空字符串、null、无分类、未分类或 unknown。即使不确定，也必须选择最接近的父分类；只有 subCategory 可以为空字符串。',
         '',
-        '只回复 JSON，不要代码块：{"name":"穿搭名称6字以内","description":"服装描述","category":"现有父分类或空字符串","subCategory":"现有子分类或空字符串","confidence":0.0}',
+        '只回复 JSON，不要代码块：{"name":"穿搭名称6字以内","description":"服装描述","category":"现有父分类","subCategory":"现有子分类或空字符串","confidence":0.0}',
         '',
         '现有分类：',
         lines.join('\n')
     ].join('\n');
 }
 
+function getDefaultClassification(categories) {
+    var cats = categories || [];
+    for (var i = 0; i < cats.length; i++) {
+        var name = getCategoryName(cats[i]);
+        if (name) return { category: name, subCategory: '', confidence: 0 };
+    }
+    return { category: '', subCategory: '', confidence: 0 };
+}
+
+function normalizeClassificationFallback(categories, fallback) {
+    fallback = fallback || {};
+    var wantedCat = (fallback.category || '').trim();
+    var wantedSub = (fallback.subCategory || '').trim();
+    var cats = categories || [];
+    for (var i = 0; i < cats.length; i++) {
+        var name = getCategoryName(cats[i]);
+        if (name !== wantedCat) continue;
+        var result = { category: name, subCategory: '', confidence: 0 };
+        if (wantedSub && getCategoryChildren(cats[i]).indexOf(wantedSub) !== -1) result.subCategory = wantedSub;
+        return result;
+    }
+    return getDefaultClassification(categories);
+}
+
 function validateClassificationResult(parsed, categories, fallback) {
-    fallback = fallback || { category: '', subCategory: '' };
-    var result = { category: fallback.category || '', subCategory: fallback.subCategory || '', confidence: 0 };
+    var result = normalizeClassificationFallback(categories, fallback);
     if (!parsed || typeof parsed !== 'object') return result;
 
     var confidence = Number(parsed.confidence);
     if (!isFinite(confidence)) confidence = 0.5;
     if (confidence > 1) confidence = confidence / 100;
-    if (confidence < 0.35) return result;
+    if (confidence < 0) confidence = 0;
+    if (confidence > 1) confidence = 1;
 
     var wantedCat = (parsed.category || parsed.cat || '').trim();
     var wantedSub = (parsed.subCategory || parsed.subcategory || parsed.sub || '').trim();
@@ -258,15 +283,7 @@ export function classifyOutfitImage(apiCfg, image, categories, fallback, cb) {
 }
 
 function getClassificationFallback(categories, outfit) {
-    var fallback = { category: outfit.category || '', subCategory: outfit.subCategory || '' };
-    var cats = categories || [];
-    var foundCat = null;
-    for (var i = 0; i < cats.length; i++) {
-        if (getCategoryName(cats[i]) === fallback.category) { foundCat = cats[i]; break; }
-    }
-    if (!foundCat) return { category: '', subCategory: '' };
-    if (fallback.subCategory && getCategoryChildren(foundCat).indexOf(fallback.subCategory) === -1) fallback.subCategory = '';
-    return fallback;
+    return normalizeClassificationFallback(categories, outfit || {});
 }
 
 // ── 批量自动分类（后台队列）──────────────────────────────
@@ -367,10 +384,11 @@ export function batchGenerateDescriptions(outfitIds, options, progressCb, doneCb
     var srcPart = loadPartition(sourcePartKey);
     var categories = srcPart.categories || [];
     var queue = [];
+    var overwriteDescription = options.overwriteDescription !== undefined ? !!options.overwriteDescription : !!apiCfg.overwrite;
     outfitIds.forEach(function (id) {
         var o = partGetById(srcPart, id);
         if (!o || !o.imageData) return;
-        var skipDescription = !!(o.description && o.description.trim() && !apiCfg.overwrite);
+        var skipDescription = !!(o.description && o.description.trim() && !overwriteDescription);
         if (skipDescription && !options.autoClassify) return;
         queue.push({
             id: id,
@@ -461,10 +479,11 @@ export function batchGenerateAccDescriptions(accIds, options, progressCb, doneCb
     var sourcePartKey = currentPartKey();
     var srcPart = loadPartition(sourcePartKey);
     var queue = [];
+    var overwriteDescription = options.overwriteDescription !== undefined ? !!options.overwriteDescription : !!apiCfg.overwrite;
     accIds.forEach(function (id) {
         var a = partGetAccById(srcPart, id);
         if (!a || !a.imageData) return;
-        if (a.description && a.description.trim() && !apiCfg.overwrite) return;
+        if (a.description && a.description.trim() && !overwriteDescription) return;
         queue.push({ id: id, name: a.name, category: a.category || '单品', dataUrl: a.imageData });
     });
     if (queue.length === 0) { doneCb(null, 0, []); return; }

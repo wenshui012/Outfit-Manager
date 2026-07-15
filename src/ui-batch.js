@@ -955,11 +955,12 @@ function openBatchImportModal(files) {
 // ── 批量 AI 生成描述弹窗 ──────────────────────────────────
 function openBatchDescModal(ids, defaults) {
     defaults = defaults || {};
-    var meta = loadMeta();
     var curP = loadCurrent();
     var withImg = ids.filter(function (id) { var o = partGetById(curP, id); return o && o.imageData; });
     var skipCount = ids.length - withImg.length;
-    var willSkipDesc = withImg.filter(function (id) { var o = partGetById(curP, id); return o && o.description && o.description.trim() && !meta.apiVision.overwrite; }).length;
+    var existingDescCount = withImg.filter(function (id) { var o = partGetById(curP, id); return o && o.description && o.description.trim(); }).length;
+    var overwriteDescDefault = defaults.overwriteDescription !== undefined ? !!defaults.overwriteDescription : true;
+    var willSkipDesc = overwriteDescDefault ? 0 : existingDescCount;
     var descCallCount = Math.max(0, withImg.length - willSkipDesc);
     var canAutoClassify = getCatNames(curP.categories || []).length > 0;
     var sourcePartKey = currentPartKey();
@@ -971,11 +972,12 @@ function openBatchDescModal(ids, defaults) {
         '<div style="font-size:.82em;opacity:.7;margin-bottom:8px">' +
         '共选中 ' + ids.length + ' 套，其中 ' + withImg.length + ' 套有图片' +
         (skipCount > 0 ? '，' + skipCount + ' 套无图片将跳过' : '') +
-        (willSkipDesc > 0 ? '<br>' + willSkipDesc + ' 套已有描述将跳过（可在设置中开启覆盖）' : '') +
+        (existingDescCount > 0 ? '<br><span id="om-batch-skip-desc">' + (overwriteDescDefault ? existingDescCount + ' 套已有描述将重新生成' : existingDescCount + ' 套已有描述将保留不改') + '</span>' : '') +
         '</div>' +
         '<div style="font-size:.78em;opacity:.5;margin-bottom:8px">共需 <span id="om-batch-call-count">' + descCallCount + '</span> 次 API 调用</div>' +
         '<div style="border:1px solid rgba(127,127,127,.12);border-radius:8px;padding:10px;margin-bottom:8px">' +
-        '<label style="display:flex;align-items:center;gap:6px;font-size:.82em;cursor:pointer"><input type="checkbox" id="om-batch-autoname" checked /> 同时生成穿搭名称（覆盖现有名称）</label>' +
+        '<label style="display:flex;align-items:center;gap:6px;font-size:.82em;cursor:pointer"><input type="checkbox" id="om-batch-overwrite-desc"' + (overwriteDescDefault ? ' checked' : '') + ' /> 重新生成描述（覆盖现有描述）</label>' +
+        '<label style="display:flex;align-items:center;gap:6px;font-size:.82em;cursor:pointer;margin-top:8px"><input type="checkbox" id="om-batch-autoname" checked /> 同时生成穿搭名称（覆盖现有名称）</label>' +
         '<label style="display:flex;align-items:center;gap:6px;font-size:.82em;cursor:pointer;margin-top:8px"><input type="checkbox" id="om-batch-autocat"' + (canAutoClassify ? '' : ' disabled') + (defaults.autoClassify && canAutoClassify ? ' checked' : '') + ' /> 同时自动分类</label>' +
         '</div>' +
         '<div id="om-batch-progress" style="display:none;margin:10px 0">' +
@@ -1000,10 +1002,17 @@ function openBatchDescModal(ids, defaults) {
     function updateBatchCallCount() {
         var el = modal.querySelector('#om-batch-call-count');
         var autoCatEl = modal.querySelector('#om-batch-autocat');
-        if (el) el.textContent = (autoCatEl && autoCatEl.checked && !autoCatEl.disabled) ? withImg.length : descCallCount;
+        var overwriteDescEl = modal.querySelector('#om-batch-overwrite-desc');
+        var overwriteDesc = !overwriteDescEl || overwriteDescEl.checked;
+        var currentDescCallCount = Math.max(0, withImg.length - (overwriteDesc ? 0 : existingDescCount));
+        if (el) el.textContent = (autoCatEl && autoCatEl.checked && !autoCatEl.disabled) ? withImg.length : currentDescCallCount;
+        var skipEl = modal.querySelector('#om-batch-skip-desc');
+        if (skipEl) skipEl.textContent = overwriteDesc ? existingDescCount + ' 套已有描述将重新生成' : existingDescCount + ' 套已有描述将保留不改';
     }
     var autoCatToggle = modal.querySelector('#om-batch-autocat');
     if (autoCatToggle) autoCatToggle.addEventListener('change', updateBatchCallCount);
+    var overwriteDescToggle = modal.querySelector('#om-batch-overwrite-desc');
+    if (overwriteDescToggle) overwriteDescToggle.addEventListener('change', updateBatchCallCount);
     updateBatchCallCount();
 
     modal.querySelector('#om-batch-start').addEventListener('click', function () {
@@ -1018,6 +1027,7 @@ function openBatchDescModal(ids, defaults) {
         };
 
         var options = {
+            overwriteDescription: modal.querySelector('#om-batch-overwrite-desc').checked,
             autoName: modal.querySelector('#om-batch-autoname').checked,
             autoClassify: modal.querySelector('#om-batch-autocat') && modal.querySelector('#om-batch-autocat').checked && !modal.querySelector('#om-batch-autocat').disabled
         };
@@ -1091,7 +1101,6 @@ function openBatchDescModal(ids, defaults) {
 
 // ── 单品批量 AI 生成描述弹窗 ─────────────────────────────
 function openAccBatchDescModal(ids) {
-    var meta = loadMeta();
     var curP = loadCurrent();
     var missingCat = ids.filter(function (id) {
         var a = partGetAccById(curP, id);
@@ -1103,7 +1112,9 @@ function openAccBatchDescModal(ids) {
     }
     var withImg = ids.filter(function (id) { var a = partGetAccById(curP, id); return a && a.imageData; });
     var skipCount = ids.length - withImg.length;
-    var willSkipDesc = withImg.filter(function (id) { var a = partGetAccById(curP, id); return a && a.description && a.description.trim() && !meta.apiVision.overwrite; }).length;
+    var existingDescCount = withImg.filter(function (id) { var a = partGetAccById(curP, id); return a && a.description && a.description.trim(); }).length;
+    var overwriteDescDefault = true;
+    var willSkipDesc = overwriteDescDefault ? 0 : existingDescCount;
     var modal = document.createElement('div');
     modal.className = 'om-modal';
     modal.style.setProperty('z-index', '2147483647', 'important');
@@ -1112,11 +1123,12 @@ function openAccBatchDescModal(ids) {
         '<div style="font-size:.82em;opacity:.7;margin-bottom:8px">' +
         '共选中 ' + ids.length + ' 个单品，其中 ' + withImg.length + ' 个有图片' +
         (skipCount > 0 ? '，' + skipCount + ' 个无图片将跳过' : '') +
-        (willSkipDesc > 0 ? '<br>' + willSkipDesc + ' 个已有描述将跳过（可在设置中开启覆盖）' : '') +
+        (existingDescCount > 0 ? '<br><span id="om-acc-batch-skip-desc">' + (overwriteDescDefault ? existingDescCount + ' 个已有描述将重新生成' : existingDescCount + ' 个已有描述将保留不改') + '</span>' : '') +
         '</div>' +
-        '<div style="font-size:.78em;opacity:.5;margin-bottom:8px">共需 ' + (withImg.length - willSkipDesc) + ' 次 API 调用</div>' +
+        '<div style="font-size:.78em;opacity:.5;margin-bottom:8px">共需 <span id="om-acc-batch-call-count">' + (withImg.length - willSkipDesc) + '</span> 次 API 调用</div>' +
         '<div style="border:1px solid rgba(127,127,127,.12);border-radius:8px;padding:10px;margin-bottom:8px">' +
-        '<label style="display:flex;align-items:center;gap:6px;font-size:.82em;cursor:pointer"><input type="checkbox" id="om-acc-batch-autoname" checked /> 同时生成单品名称（覆盖现有名称）</label>' +
+        '<label style="display:flex;align-items:center;gap:6px;font-size:.82em;cursor:pointer"><input type="checkbox" id="om-acc-batch-overwrite-desc" checked /> 重新生成描述（覆盖现有描述）</label>' +
+        '<label style="display:flex;align-items:center;gap:6px;font-size:.82em;cursor:pointer;margin-top:8px"><input type="checkbox" id="om-acc-batch-autoname" checked /> 同时生成单品名称（覆盖现有名称）</label>' +
         '</div>' +
         '<div id="om-acc-batch-progress" style="display:none;margin:10px 0">' +
         '<div style="font-size:.82em;margin-bottom:6px" id="om-acc-batch-prog-text">准备中...</div>' +
@@ -1137,6 +1149,18 @@ function openAccBatchDescModal(ids) {
     modal.addEventListener('click', function (e) { if (e.target === modal) removeModal(); });
     modal.querySelector('#om-acc-batch-close').addEventListener('click', function () { removeModal(); });
 
+    function updateAccBatchCallCount() {
+        var overwriteDescEl = modal.querySelector('#om-acc-batch-overwrite-desc');
+        var overwriteDesc = !overwriteDescEl || overwriteDescEl.checked;
+        var callEl = modal.querySelector('#om-acc-batch-call-count');
+        if (callEl) callEl.textContent = Math.max(0, withImg.length - (overwriteDesc ? 0 : existingDescCount));
+        var skipEl = modal.querySelector('#om-acc-batch-skip-desc');
+        if (skipEl) skipEl.textContent = overwriteDesc ? existingDescCount + ' 个已有描述将重新生成' : existingDescCount + ' 个已有描述将保留不改';
+    }
+    var accOverwriteDescToggle = modal.querySelector('#om-acc-batch-overwrite-desc');
+    if (accOverwriteDescToggle) accOverwriteDescToggle.addEventListener('change', updateAccBatchCallCount);
+    updateAccBatchCallCount();
+
     modal.querySelector('#om-acc-batch-start').addEventListener('click', function () {
         modal.querySelector('#om-acc-batch-progress').style.display = 'block';
         modal.querySelector('#om-acc-batch-start').disabled = true;
@@ -1149,6 +1173,7 @@ function openAccBatchDescModal(ids) {
         };
 
         var options = {
+            overwriteDescription: modal.querySelector('#om-acc-batch-overwrite-desc').checked,
             autoName: modal.querySelector('#om-acc-batch-autoname').checked
         };
 
