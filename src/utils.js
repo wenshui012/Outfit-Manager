@@ -6,6 +6,17 @@ export var IMG_QUALITY = 0.75;
 
 export function genId() { return Date.now().toString(36) + Math.random().toString(36).slice(2, 6); }
 
+export function uniqueIds(ids) {
+    var result = [];
+    var seen = {};
+    (ids || []).forEach(function (id) {
+        if (!id || seen[id]) return;
+        seen[id] = true;
+        result.push(id);
+    });
+    return result;
+}
+
 export function esc(s) { return s ? String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;') : ''; }
 
 // 获取弹层容器
