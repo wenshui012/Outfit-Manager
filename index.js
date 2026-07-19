@@ -12,6 +12,7 @@ import { registerMainFn, preResolveActiveImages } from './src/ui-main.js';
 import { registerSheetsFn, createSheet, closeSheet, getAllTagSuggestions } from './src/ui-sheets.js';
 import { registerBatchFn, initBatchDeps } from './src/ui-batch.js';
 import { injectFab, updateBtn, injectBtn, registerFabFn } from './src/ui-fab.js';
+import { toast } from './src/utils.js';
 
 // ── 注册跨模块函数 ─────────────────────────────────────
 registerMainFn();
@@ -26,7 +27,12 @@ injectStyles();
 
 // 初始化存储：探测后端 → 加载 meta → 迁移 → 预加载 partitions
 // 所有依赖数据的操作（注入拦截、悬浮球、按钮）放在回调里
-initStorage(function () {
+initStorage(function (err) {
+    if (err) {
+        console.error('[outfit-manager] 初始化失败，已停止启动可写 UI：', err);
+        toast('后端数据读取失败，请刷新或检查服务器', true);
+        return;
+    }
     // 安装 fetch/XHR 拦截
     setupInjection();
 

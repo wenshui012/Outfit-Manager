@@ -34,6 +34,9 @@ var partCache = {};             // { partKey: partition }
 var serverMode = false;
 var serverVersion = 1;
 var serverSupportsPartitions = false;
+// v2 后端必须完整 hydrate 后才能写。读取失败绝不能被当作“空数据”后反向覆盖服务器。
+var serverHydrated = false;
+var serverInitFailed = false;
 var csrfToken = null;
 
 // server PUT 防抖（v1 全量模式）
@@ -47,6 +50,8 @@ var dirtyPartKeys = {};         // { partKey: true }
 var partFlushTimer = null;
 var partFlushInFlight = false;
 var deletedPartKeys = {};       // tombstone：已删除的 key，防止 in-flight PUT 复活
+var SERVER_READ_MAX_ATTEMPTS = 3;
+var SERVER_READ_RETRY_MS = 150;
 
 // ══════════════════════════════════════════════════════════
 //  IndexedDB 底层
@@ -246,6 +251,7 @@ function scheduleServerPutKey(key) {
         scheduleServerPut(); // v1 后端走全量
         return;
     }
+    if (!serverHydrated || serverInitFailed) return;
     dirtyPartKeys[key] = true;
     if (partFlushTimer) clearTimeout(partFlushTimer);
     partFlushTimer = setTimeout(function () {
@@ -256,6 +262,10 @@ function scheduleServerPutKey(key) {
 
 // 批量 flush 所有 dirty key
 function flushDirtyPartitions() {
+    if (serverSupportsPartitions && (!serverHydrated || serverInitFailed)) {
+        dirtyPartKeys = {};
+        return;
+    }
     if (partFlushInFlight) return;
     var keys = Object.keys(dirtyPartKeys);
     if (keys.length === 0) return;
@@ -284,6 +294,7 @@ function flushDirtyPartitions() {
 
 // PUT 单个 partition 到 v2 后端
 function serverPutPartition(key, data, cb) {
+    if (!serverHydrated || serverInitFailed) { if (cb) cb(); return; }
     getWriteHeaders().then(function (headers) {
         return fetch(SERVER_BASE + '/partitions/' + encodeURIComponent(key), {
             method: 'PUT',
@@ -305,6 +316,7 @@ function serverPutPartition(key, data, cb) {
 // DELETE 单个 partition（立即发送，不防抖）
 function serverDeletePartition(key) {
     if (!serverMode || !serverSupportsPartitions) return;
+    if (!serverHydrated || serverInitFailed) return;
     // 标记 tombstone，防止 in-flight PUT 复活此 key
     deletedPartKeys[key] = true;
     // 从 dirty 队列移除（已删的不需要再 PUT）
@@ -314,6 +326,7 @@ function serverDeletePartition(key) {
 
 // 底层 DELETE 发送（serverDeletePartition 和 PUT 后补删都调用这里）
 function sendDeletePartition(key) {
+    if (!serverHydrated || serverInitFailed) return;
     getWriteHeaders().then(function (headers) {
         return fetch(SERVER_BASE + '/partitions/' + encodeURIComponent(key), {
             method: 'DELETE',
@@ -325,26 +338,91 @@ function sendDeletePartition(key) {
     }).catch(function () {});
 }
 
+function serverReadFailure(kind, status, error, retryable) {
+    return {
+        ok: false,
+        status: status || 0,
+        found: false,
+        data: null,
+        error: error || kind,
+        kind: kind,
+        retryable: !!retryable
+    };
+}
+
+// 读取响应必须保留 404、500、网络错误、解析错误等语义；一个 null 无法安全表示这些状态。
+function fetchServerJson(url) {
+    return fetch(url, { method: 'GET', credentials: 'same-origin' }).then(function (r) {
+        if (!r || typeof r.status !== 'number') {
+            return serverReadFailure('unexpected_response', 0, 'Missing HTTP response', false);
+        }
+        if (r.status === 404) {
+            return { ok: true, status: 404, found: false, data: null, error: null, kind: 'not_found', retryable: false };
+        }
+        if (!r.ok) {
+            return serverReadFailure('http_error', r.status, 'HTTP ' + r.status, r.status >= 500);
+        }
+        return r.json().then(function (body) {
+            return { ok: true, status: r.status, found: true, data: body, error: null, kind: null, retryable: false };
+        }, function (err) {
+            return serverReadFailure('parse_error', r.status, err && err.message ? err.message : 'Invalid JSON', true);
+        });
+    }, function (err) {
+        return serverReadFailure('network_error', 0, err && err.message ? err.message : 'Network error', true);
+    });
+}
+
+function retryServerRead(label, readFn, cb, attempt) {
+    var n = attempt || 1;
+    function handleResult(result) {
+        if (!result.ok && result.retryable && n < SERVER_READ_MAX_ATTEMPTS) {
+            try { console.warn('[outfit-manager] ' + label + ' 读取失败，准备重试 (' + n + '/' + SERVER_READ_MAX_ATTEMPTS + '):', result.error); } catch (e) {}
+            setTimeout(function () { retryServerRead(label, readFn, cb, n + 1); }, SERVER_READ_RETRY_MS * n);
+            return;
+        }
+        result.attempts = n;
+        cb(result);
+    }
+    var request;
+    try { request = readFn(); }
+    catch (err) { handleResult(serverReadFailure('network_error', 0, err && err.message, true)); return; }
+    Promise.resolve(request).then(handleResult, function (err) {
+        handleResult(serverReadFailure('network_error', 0, err && err.message, true));
+    });
+}
+
 // GET 单个 partition（v2 启动加载用）
 function serverGetPartition(key, cb) {
-    fetch(SERVER_BASE + '/partitions/' + encodeURIComponent(key), {
-        method: 'GET',
-        credentials: 'same-origin'
-    })
-    .then(function (r) { return r.ok ? r.json() : null; })
-    .then(function (j) { cb((j && j.ok) ? (j.data || null) : null); })
-    .catch(function () { cb(null); });
+    var label = 'partition ' + key;
+    retryServerRead(label, function () {
+        return fetchServerJson(SERVER_BASE + '/partitions/' + encodeURIComponent(key)).then(function (result) {
+            if (!result.ok || !result.found) return result;
+            var body = result.data;
+            if (!body || typeof body !== 'object' || body.ok !== true || !Object.prototype.hasOwnProperty.call(body, 'data')) {
+                return serverReadFailure('unexpected_response', result.status, 'Unexpected partition response', false);
+            }
+            // 旧 v2 后端以 200 + data:null 表示文件不存在；保留 found=false，由初始化上下文决定是否安全。
+            if (body.data === null || body.data === undefined) {
+                return { ok: true, status: result.status, found: false, data: null, error: null, kind: 'legacy_null', retryable: false, legacyNull: true };
+            }
+            return { ok: true, status: result.status, found: true, data: body.data, error: null, kind: null, retryable: false };
+        });
+    }, cb);
 }
 
 // GET /partitions/keys（v2 启动用）
 function serverGetPartitionKeys(cb) {
-    fetch(SERVER_BASE + '/partitions/keys', {
-        method: 'GET',
-        credentials: 'same-origin'
-    })
-    .then(function (r) { return r.ok ? r.json() : null; })
-    .then(function (j) { cb((j && j.ok) ? (j.keys || []) : []); })
-    .catch(function () { cb([]); });
+    retryServerRead('partition keys', function () {
+        return fetchServerJson(SERVER_BASE + '/partitions/keys').then(function (result) {
+            if (!result.ok) return result;
+            if (!result.found) return serverReadFailure('not_found', result.status, 'Partition keys endpoint not found', false);
+            var body = result.data;
+            if (!body || typeof body !== 'object' || body.ok !== true || !Array.isArray(body.keys)) {
+                return serverReadFailure('unexpected_response', result.status, 'Unexpected partition keys response', false);
+            }
+            return { ok: true, status: result.status, found: true, data: body.keys, error: null, kind: null, retryable: false };
+        });
+    }, cb);
 }
 
 // 从内存重组 v1 格式的完整数据（server 兼容用）
@@ -554,15 +632,22 @@ function mergePartitionInto(target, source) {
 }
 
 export function loadMeta() {
+    if (serverMode && serverSupportsPartitions && serverInitFailed) {
+        throw new Error('Outfit Manager server initialization failed');
+    }
     if (!metaCache) metaCache = defMeta();
+    // v2 hydrate 期间禁止 normalize 触发 save/delete；成功打开写门后再做兼容规范化。
+    if (serverMode && serverSupportsPartitions && !serverHydrated) return metaCache;
     if (normalizeSharedCharState(metaCache)) saveMeta(metaCache);
     return metaCache;
 }
 
 export function saveMeta(meta) {
+    if (serverMode && serverSupportsPartitions && serverInitFailed) return false;
     metaCache = meta;
     idbPut('meta', meta);
     scheduleServerPutKey('meta');
+    return true;
 }
 
 // ══════════════════════════════════════════════════════════
@@ -571,20 +656,26 @@ export function saveMeta(meta) {
 
 // 同步读（从缓存，必须已 ensure 过）
 export function loadPartition(partKey) {
+    if (serverMode && serverSupportsPartitions && serverInitFailed) {
+        throw new Error('Outfit Manager server initialization failed');
+    }
     if (!partCache[partKey]) partCache[partKey] = defPartition();
     return partCache[partKey];
 }
 
 // 写 partition（本地 IDB + server 防抖）
 export function savePartition(partKey, data) {
+    if (serverMode && serverSupportsPartitions && serverInitFailed) return false;
     partCache[partKey] = data;
     delete deletedPartKeys[partKey];
     idbPut(partKey, data);
     scheduleServerPutKey(partKey);
+    return true;
 }
 
 // 异步确保 partition 在缓存里（切视角时用）
 export function ensurePartition(partKey, cb) {
+    if (serverMode && serverSupportsPartitions && serverInitFailed) { if (cb) cb(null); return; }
     if (partCache[partKey]) { if (cb) cb(partCache[partKey]); return; }
     idbGet(partKey, function (raw) {
         partCache[partKey] = ensurePartDefaults(raw);
@@ -594,9 +685,11 @@ export function ensurePartition(partKey, cb) {
 
 // 删除 partition（角色删除时用）
 export function deletePartition(partKey) {
+    if (serverMode && serverSupportsPartitions && serverInitFailed) return false;
     delete partCache[partKey];
     idbDelete(partKey);
     serverDeletePartition(partKey);
+    return true;
 }
 
 // ══════════════════════════════════════════════════════════
@@ -1262,12 +1355,14 @@ function hasRealOutfitData(d) {
 }
 
 export function initStorage(cb) {
+    serverHydrated = false;
+    serverInitFailed = false;
     detectServer(function (ok) {
         serverMode = !!ok;
 
         if (serverMode && serverSupportsPartitions) {
-            // v2 后端：逐个 partition 加载
-            initFromServerV2(function () { cb(); });
+            // v2 后端：只有完整 hydrate 成功才允许入口启动可写 UI
+            initFromServerV2(function (err) { cb(err || null); });
             return;
         }
 
@@ -1276,7 +1371,7 @@ export function initStorage(cb) {
             serverGetData(function (serverData) {
                 if (hasRealOutfitData(serverData)) {
                     splitServerDataToPartitions(serverData, function () {
-                        preloadAllPartitions(function () { cb(); });
+                        preloadAllPartitions(function () { cb(null); });
                     });
                     return;
                 }
@@ -1287,56 +1382,204 @@ export function initStorage(cb) {
                         scheduleServerPut();
                         try { console.log('[outfit-manager] 已将本地数据迁移到后端。'); } catch (e) {}
                     }
-                    cb();
+                    cb(null);
                 });
             });
             return;
         }
 
         // 本地模式
-        initLocal(function () { cb(); });
+        initLocal(function () { cb(null); });
     });
 }
 
-// v2 后端启动：GET /partitions/keys → 逐个 GET /partitions/:key
+function clearServerWriteQueue() {
+    if (partFlushTimer) clearTimeout(partFlushTimer);
+    partFlushTimer = null;
+    dirtyPartKeys = {};
+}
+
+function failServerInitialization(message, details, cb) {
+    serverHydrated = false;
+    serverInitFailed = true;
+    clearServerWriteQueue();
+    var err = new Error(message);
+    err.details = details || null;
+    try { console.error('[outfit-manager] 后端初始化已中止：' + message, details || ''); } catch (e) {}
+    cb(err);
+}
+
+function validateMetaPayload(data) {
+    if (!data || typeof data !== 'object' || Array.isArray(data)) return 'meta 不是 JSON 对象';
+    var arrayFields = ['presets', 'charIndex', 'charFavorites', 'tagOrder'];
+    for (var i = 0; i < arrayFields.length; i++) {
+        var field = arrayFields[i];
+        if (data[field] !== undefined && !Array.isArray(data[field])) return 'meta.' + field + ' 类型无效';
+    }
+    if (data.activePartitions !== undefined && (!data.activePartitions || typeof data.activePartitions !== 'object' || Array.isArray(data.activePartitions))) {
+        return 'meta.activePartitions 类型无效';
+    }
+    if (data.charGroups !== undefined && (!data.charGroups || typeof data.charGroups !== 'object' || Array.isArray(data.charGroups))) {
+        return 'meta.charGroups 类型无效';
+    }
+    var indexedFields = ['presets', 'charIndex'];
+    for (var j = 0; j < indexedFields.length; j++) {
+        var entries = data[indexedFields[j]] || [];
+        for (var n = 0; n < entries.length; n++) {
+            if (!entries[n] || !isListedPartitionKey(entries[n].partKey)) return 'meta.' + indexedFields[j] + ' 包含无效分包引用';
+        }
+    }
+    var active = data.activePartitions || {};
+    for (var key in active) {
+        if (!isListedPartitionKey(key) || !Array.isArray(active[key])) return 'meta.activePartitions 包含无效分包引用';
+    }
+    return null;
+}
+
+function validatePartitionPayload(data, key) {
+    if (!data || typeof data !== 'object' || Array.isArray(data)) return key + ' 不是 JSON 对象';
+    var arrayFields = ['outfits', 'categories', 'activeIds', 'accessories', 'accCategories'];
+    for (var i = 0; i < arrayFields.length; i++) {
+        var field = arrayFields[i];
+        if (data[field] !== undefined && !Array.isArray(data[field])) return key + '.' + field + ' 类型无效';
+    }
+    return null;
+}
+
+function collectRequiredPartKeys(meta) {
+    var required = ['user:__default__'];
+    function add(key) {
+        if (typeof key === 'string' && required.indexOf(key) === -1) required.push(key);
+    }
+    (meta.presets || []).forEach(function (item) { if (item) add(item.partKey); });
+    (meta.charIndex || []).forEach(function (item) { if (item) add(item.partKey); });
+    var active = meta.activePartitions || {};
+    for (var key in active) add(key);
+    return required;
+}
+
+function isListedPartitionKey(key) {
+    return typeof key === 'string' && /^(user:(__default__|[A-Za-z0-9_-]+)|char:(__shared__|c_[A-Za-z0-9]{8}))$/.test(key);
+}
+
+function normalizeHydratedServerState() {
+    var meta = loadMeta();
+    collectRequiredPartKeys(meta).forEach(function (key) {
+        if (!partCache[key]) savePartition(key, defPartition());
+    });
+}
+
+// v2 后端启动：keys 成功后先加载 meta，再加载并验证全部现存 partition。
 function initFromServerV2(cb) {
-    serverGetPartitionKeys(function (keys) {
-        if (!keys || keys.length === 0) {
-            // v2 后端无数据：检查本地，有则上传
+    serverGetPartitionKeys(function (keysResult) {
+        if (!keysResult.ok) {
+            failServerInitialization('后端分包索引读取失败，请刷新或检查服务器', keysResult, cb);
+            return;
+        }
+        var keys = keysResult.data;
+        if (keys.length === 0) {
+            // 只有成功读取到明确的空 keys，才可判定为全新后端并上传本地数据。
             initLocal(function () {
-                if (Object.keys(partCache).length > 0) {
-                    // 本地有数据，逐个推到 v2 后端
-                    uploadLocalToServerV2(function () {
-                        try { console.log('[outfit-manager] 已将本地数据迁移到 v2 后端。'); } catch (e) {}
-                        cb();
-                    });
-                } else {
-                    cb();
-                }
+                serverHydrated = true;
+                serverInitFailed = false;
+                normalizeHydratedServerState();
+                uploadLocalToServerV2(function () {
+                    try { console.log('[outfit-manager] 已初始化空 v2 后端。'); } catch (e) {}
+                    cb(null);
+                });
             });
             return;
         }
 
-        // 有 key，逐个拉取
-        var pending = keys.length;
-        var entries = []; // { key, value } 批量写 IDB
-        keys.forEach(function (key) {
-            serverGetPartition(key, function (data) {
-                if (key === 'meta') {
-                    metaCache = ensureMetaDefaults(data);
-                    entries.push({ key: 'meta', value: metaCache });
-                } else {
-                    partCache[key] = ensurePartDefaults(data);
-                    entries.push({ key: key, value: partCache[key] });
-                }
-                pending--;
-                if (pending === 0) {
-                    // 批量写入 IDB 作本地缓存
-                    idbPutBatch(entries, function () {
-                        // 兼容期：确保所有 partition 都已加载
-                        preloadAllPartitions(function () { cb(); });
-                    });
-                }
+        var seen = {};
+        for (var i = 0; i < keys.length; i++) {
+            if (typeof keys[i] !== 'string' || seen[keys[i]] || (keys[i] !== 'meta' && !isListedPartitionKey(keys[i]))) {
+                failServerInitialization('后端返回了无效的分包索引', keysResult, cb);
+                return;
+            }
+            seen[keys[i]] = true;
+        }
+
+        var partKeys = keys.filter(function (key) { return key !== 'meta'; });
+        if (!seen.meta) {
+            var orphanMessage = partKeys.length > 0
+                ? '检测到衣柜分包存在但 meta 索引缺失，需要恢复索引。'
+                : '后端 meta 索引缺失';
+            failServerInitialization(orphanMessage, { keys: keys }, cb);
+            return;
+        }
+
+        serverGetPartition('meta', function (metaResult) {
+            if (!metaResult.ok || !metaResult.found) {
+                failServerInitialization('后端 meta 读取失败，请刷新或检查服务器', metaResult, cb);
+                return;
+            }
+            var validationError = validateMetaPayload(metaResult.data);
+            if (validationError) {
+                failServerInitialization('后端 meta 数据无效：' + validationError, metaResult, cb);
+                return;
+            }
+
+            var hydratedMeta;
+            try { hydratedMeta = ensureMetaDefaults(metaResult.data); }
+            catch (err) {
+                failServerInitialization('后端 meta 数据规范化失败', { error: err && err.message }, cb);
+                return;
+            }
+
+            var requiredKeys = collectRequiredPartKeys(hydratedMeta);
+            var missingKeys = requiredKeys.filter(function (key) { return !seen[key]; });
+            if (missingKeys.length > 0) {
+                failServerInitialization('meta 引用的衣柜分包缺失：' + missingKeys.join(', '), { keys: keys, missingKeys: missingKeys }, cb);
+                return;
+            }
+
+            var pending = partKeys.length;
+            var failed = false;
+            var hydratedParts = {};
+            if (pending === 0) {
+                failServerInitialization('后端已有 meta，但没有必要的衣柜分包', { keys: keys }, cb);
+                return;
+            }
+
+            partKeys.forEach(function (key) {
+                serverGetPartition(key, function (partResult) {
+                    if (failed) return;
+                    if (!partResult.ok || !partResult.found) {
+                        failed = true;
+                        failServerInitialization('后端衣柜分包读取失败：' + key, partResult, cb);
+                        return;
+                    }
+                    var partValidationError = validatePartitionPayload(partResult.data, key);
+                    if (partValidationError) {
+                        failed = true;
+                        failServerInitialization('后端衣柜分包数据无效：' + partValidationError, partResult, cb);
+                        return;
+                    }
+                    try { hydratedParts[key] = ensurePartDefaults(partResult.data); }
+                    catch (err) {
+                        failed = true;
+                        failServerInitialization('后端衣柜分包规范化失败：' + key, { error: err && err.message }, cb);
+                        return;
+                    }
+                    pending--;
+                    if (pending === 0) {
+                        // 所有读取完成前不触碰现有缓存；此处才原子切换 hydrate 结果。
+                        metaCache = hydratedMeta;
+                        partCache = hydratedParts;
+                        deletedPartKeys = {};
+                        var entries = [{ key: 'meta', value: metaCache }];
+                        partKeys.forEach(function (partKey) {
+                            entries.push({ key: partKey, value: partCache[partKey] });
+                        });
+                        idbPutBatch(entries, function () {
+                            serverHydrated = true;
+                            serverInitFailed = false;
+                            normalizeHydratedServerState();
+                            cb(null);
+                        });
+                    }
+                });
             });
         });
     });
