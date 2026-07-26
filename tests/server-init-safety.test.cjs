@@ -88,6 +88,7 @@ function createFetch(config, requests) {
             spec = take('part:' + key, { status: 404, body: { ok: false } });
         } else spec = { status: 404, body: { ok: false } };
 
+        if (spec.syncError) throw new Error(spec.syncError);
         if (spec.networkError) return Promise.reject(new Error(spec.networkError));
         return Promise.resolve(httpResponse(spec));
     };
@@ -96,12 +97,18 @@ function createFetch(config, requests) {
 async function loadDb(config, seed) {
     const requests = [];
     const indexedDB = createIndexedDB(seed);
+    const localValues = new Map();
+    if (config.serverSeen) localValues.set('outfit_mgr_server_seen', '1');
     const fastSetTimeout = (fn, ms) => setTimeout(fn, Math.min(ms || 0, 3));
     const context = vm.createContext({
         console: { log() {}, warn() {}, error() {} },
         fetch: createFetch(config, requests),
         indexedDB,
-        localStorage: { getItem: () => null, removeItem() {} },
+        localStorage: {
+            getItem: (key) => localValues.has(key) ? localValues.get(key) : null,
+            setItem: (key, value) => localValues.set(key, String(value)),
+            removeItem: (key) => localValues.delete(key)
+        },
         window: { getRequestHeaders: () => ({ 'X-Test': '1' }) },
         Promise,
         setTimeout: fastSetTimeout,
@@ -286,29 +293,52 @@ async function run() {
         results.push({ scenario: 'G', status: 'pass', failureWrites: 0 });
     }
 
-    // H. 明确 404 才视为未安装后端：本地运行，不产生反向写请求。
+    // H. 从未确认过后端：404、网络/代理、解析异常均允许纯前端本地运行，且不产生后端写请求。
     {
         const seed = { meta: META, [DEFAULT_KEY]: part('cached'), [PRESET_KEY]: part('cached-preset'), [SHARED_KEY]: part('cached-shared'), [CHAR_KEY]: part('cached-char') };
-        const env = await loadDb({ status: [{ status: 404, body: { ok: false } }] }, seed);
-        assert.equal(await initialize(env), null);
-        await settle();
-        assert.equal(writes(env.requests).length, 0);
+        const configs = [
+            { status: [{ status: 404, body: { ok: false } }] },
+            { status: [{ syncError: 'Tauri relative API unavailable' }] },
+            { status: [{ networkError: 'route unavailable' }] },
+            { status: [{ status: 200, parseError: 'HTML response' }] },
+            { status: [{ status: 403, body: { ok: false } }] }
+        ];
+        for (const config of configs) {
+            const env = await loadDb(config, seed);
+            assert.equal(await initialize(env), null);
+            await settle();
+            assert.equal(env.api.getStorageHealth().serverMode, false);
+            assert.equal(env.api.getStorageHealth().serverInitFailed, false);
+            assert.equal(writes(env.requests).length, 0);
+        }
+        const removedEnv = await loadDb({
+            status: [
+                { status: 404, body: { ok: false } },
+                { networkError: 'route remains unavailable' }
+            ],
+            serverSeen: true
+        }, seed);
+        assert.equal(await initialize(removedEnv), null, 'explicit 404 should allow an installed backend to be removed');
+        assert.equal(await initialize(removedEnv), null, '404 should clear the confirmed marker for later non-standard failures');
+        assert.equal(removedEnv.api.getStorageHealth().serverMode, false);
+        assert.equal(removedEnv.api.getStorageHealth().serverInitFailed, false);
+        assert.equal(writes(removedEnv.requests).length, 0);
         results.push({ scenario: 'H', status: 'pass', failureWrites: 0 });
     }
 
-    // I. 状态接口网络/500/协议错误不能伪装成本地模式，必须进入恢复锁定。
+    // I. 曾成功确认过后端：状态接口网络/500/协议错误仍必须进入恢复锁定。
     {
         const seed = { meta: META, [DEFAULT_KEY]: part('cached') };
-        const networkEnv = await loadDb({ status: [{ networkError: 'offline' }] }, seed);
+        const networkEnv = await loadDb({ status: [{ networkError: 'offline' }], serverSeen: true }, seed);
         await assertFailureHasNoWrites(networkEnv, /状态检测失败/);
         assert.equal(networkEnv.api.getStorageHealth().error.code, 'SERVER_STATUS_FAILED');
         assert.equal(networkEnv.requests.filter((request) => request.url.endsWith('/status')).length, 3);
 
-        const httpEnv = await loadDb({ status: [{ status: 500, body: { ok: false } }] }, seed);
+        const httpEnv = await loadDb({ status: [{ status: 500, body: { ok: false } }], serverSeen: true }, seed);
         await assertFailureHasNoWrites(httpEnv, /状态检测失败/);
         assert.equal(httpEnv.requests.filter((request) => request.url.endsWith('/status')).length, 3);
 
-        const protocolEnv = await loadDb({ status: [{ status: 200, body: { ok: false } }] }, seed);
+        const protocolEnv = await loadDb({ status: [{ status: 200, body: { ok: false } }], serverSeen: true }, seed);
         await assertFailureHasNoWrites(protocolEnv, /状态检测失败/);
         results.push({ scenario: 'I', status: 'pass', failureWrites: 0 });
     }

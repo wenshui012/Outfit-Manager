@@ -20,6 +20,7 @@ var DB_NAME = 'outfit_mgr_db';
 var DB_VERSION = 1;
 var STORE_NAME = 'data';
 var LS_KEY = 'outfit_mgr_v4';
+var SERVER_SEEN_KEY = 'outfit_mgr_server_seen';
 
 // v1 旧 key（迁移用）
 var LEGACY_DATA_KEY = 'main';
@@ -195,6 +196,7 @@ function scheduleServerCheckpoint() {
 }
 
 function detectServer(cb) {
+    var serverWasConfirmed = wasServerPreviouslyConfirmed();
     retryServerRead('server status', function () {
         return fetchServerJson(SERVER_BASE + '/status').then(function (result) {
             if (!result.ok || !result.found) return result;
@@ -206,12 +208,29 @@ function detectServer(cb) {
         });
     }, function (result) {
         if (result.ok && !result.found) {
+            forgetConfirmedServer();
             serverRecoveryRevision = null;
             serverSupportsRecovery = false;
             cb({ installed: false, ok: true, status: 404, kind: 'not_installed', error: null, attempts: result.attempts });
             return;
         }
         if (!result.ok) {
+            // 纯前端环境对不存在的插件路由不一定返回标准 404，也可能表现为网络、
+            // 代理或 HTML 解析错误。只有曾成功识别过后端，才把这类失败升级为恢复锁定。
+            if (!serverWasConfirmed) {
+                serverRecoveryRevision = null;
+                serverSupportsRecovery = false;
+                try { console.warn('[outfit-manager] 未确认安装后端，已使用本地存储模式。', result); } catch (e) {}
+                cb({
+                    installed: false,
+                    ok: true,
+                    status: result.status,
+                    kind: 'not_confirmed',
+                    error: result.error,
+                    attempts: result.attempts
+                });
+                return;
+            }
             cb({
                 installed: true,
                 ok: false,
@@ -227,8 +246,22 @@ function detectServer(cb) {
         serverSupportsPartitions = serverVersion >= 2 && body.partitions === true;
         serverSupportsRecovery = Number(body.recovery || 0) >= 1;
         serverRecoveryRevision = typeof body.recoveryRevision === 'string' ? body.recoveryRevision : null;
+        rememberConfirmedServer();
         cb({ installed: true, ok: true, status: result.status, kind: null, error: null, attempts: result.attempts });
     });
+}
+
+function wasServerPreviouslyConfirmed() {
+    try { return localStorage.getItem(SERVER_SEEN_KEY) === '1'; }
+    catch (e) { return false; }
+}
+
+function rememberConfirmedServer() {
+    try { localStorage.setItem(SERVER_SEEN_KEY, '1'); } catch (e) {}
+}
+
+function forgetConfirmedServer() {
+    try { localStorage.removeItem(SERVER_SEEN_KEY); } catch (e) {}
 }
 
 function serverGetData(cb) {
