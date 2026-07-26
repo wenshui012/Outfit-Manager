@@ -88,7 +88,7 @@ function injectFab() {
         mainBtn.setAttribute('style',
             'width:' + MAIN_SIZE + 'px !important;height:' + MAIN_SIZE + 'px !important;' +
             'cursor:pointer !important;display:block !important;' +
-            'pointer-events:auto !important;object-fit:contain !important;' +
+            'pointer-events:auto !important;object-fit:contain !important;touch-action:none !important;' +
             'filter:drop-shadow(0 2px 6px rgba(0,0,0,.25)) !important;');
     } else {
         mainBtn = document.createElement('div');
@@ -97,33 +97,44 @@ function injectFab() {
             'width:' + MAIN_SIZE + 'px !important;height:' + MAIN_SIZE + 'px !important;border-radius:50% !important;' +
             'background:' + accent + ' !important;color:#fff !important;border:none !important;cursor:pointer !important;' +
             'display:flex !important;align-items:center !important;justify-content:center !important;' +
-            'box-shadow:0 4px 16px rgba(0,0,0,.35) !important;opacity:.9 !important;pointer-events:auto !important;');
+            'box-shadow:0 4px 16px rgba(0,0,0,.35) !important;opacity:.9 !important;pointer-events:auto !important;' +
+            'touch-action:none !important;');
     }
 
     mainBtn.id = 'om-fab-main-btn';
     container.appendChild(mainBtn);
 
     // 拖拽 + 点击判断
-    var _dragState = { sx: 0, sy: 0, ox: 0, oy: 0, moved: false };
-    mainBtn.addEventListener('touchstart', function (e) {
-        var t = e.touches[0];
-        _dragState.sx = t.clientX; _dragState.sy = t.clientY;
+    var _dragState = { sx: 0, sy: 0, ox: 0, oy: 0, moved: false, handled: false };
+    function startDrag(x, y) {
         var rect = container.getBoundingClientRect();
+        _dragState.sx = x; _dragState.sy = y;
         _dragState.ox = rect.left; _dragState.oy = rect.top;
         _dragState.moved = false;
-    }, { passive: true });
-    mainBtn.addEventListener('touchmove', function (e) {
-        var t = e.touches[0];
-        var dx = t.clientX - _dragState.sx, dy = t.clientY - _dragState.sy;
+    }
+    function moveDrag(x, y) {
+        var dx = x - _dragState.sx, dy = y - _dragState.sy;
         if (Math.abs(dx) > 5 || Math.abs(dy) > 5) _dragState.moved = true;
         if (_dragState.moved) {
-            var nx = _dragState.ox + dx, ny = _dragState.oy + dy;
-            var vw = window.innerWidth, vh = window.innerHeight;
-            nx = Math.max(0, Math.min(nx, vw - MAIN_SIZE));
-            ny = Math.max(0, Math.min(ny, vh - MAIN_SIZE));
+            var nx = Math.max(0, Math.min(_dragState.ox + dx, window.innerWidth - MAIN_SIZE));
+            var ny = Math.max(0, Math.min(_dragState.oy + dy, window.innerHeight - MAIN_SIZE));
             container.style.setProperty('left', nx + 'px', 'important');
             container.style.setProperty('top', ny + 'px', 'important');
         }
+    }
+    function saveFabPos() {
+        var rect = container.getBoundingClientRect();
+        var dd = loadMeta();
+        dd.fabPos = { top: Math.round(rect.top), left: Math.round(rect.left) };
+        saveMeta(dd);
+    }
+    mainBtn.addEventListener('touchstart', function (e) {
+        var t = e.touches[0];
+        startDrag(t.clientX, t.clientY);
+    }, { passive: true });
+    mainBtn.addEventListener('touchmove', function (e) {
+        var t = e.touches[0];
+        moveDrag(t.clientX, t.clientY);
     }, { passive: true });
     mainBtn.addEventListener('touchend', function (e) {
         if (!_dragState.moved) {
@@ -132,14 +143,30 @@ function injectFab() {
             setTimeout(function () { fn.openPopup(); }, 50);
         } else {
             // 拖拽结束：保存位置
-            var rect = container.getBoundingClientRect();
-            var dd = loadMeta();
-            dd.fabPos = { top: Math.round(rect.top), left: Math.round(rect.left) };
-            saveMeta(dd);
+            saveFabPos();
         }
     });
-    // PC端点击
+
+    // PC 端：只在左键按下期间监听文档级移动/抬起，避免遗留永久监听器。
+    mainBtn.addEventListener('mousedown', function (e) {
+        if (e.button !== 0) return;
+        e.preventDefault();
+        startDrag(e.clientX, e.clientY);
+        document.addEventListener('mousemove', mouseMove);
+        document.addEventListener('mouseup', mouseUp);
+    });
+    function mouseMove(e) {
+        moveDrag(e.clientX, e.clientY);
+    }
+    function mouseUp() {
+        document.removeEventListener('mousemove', mouseMove);
+        document.removeEventListener('mouseup', mouseUp);
+        if (_dragState.moved) saveFabPos();
+    }
+
+    // 点击：触摸点击和拖拽后的合成 click 都只处理一次。
     mainBtn.addEventListener('click', function (e) {
+        e.stopPropagation();
         if (_dragState.handled) { _dragState.handled = false; return; }
         if (_dragState.moved) { _dragState.moved = false; return; }
         fn.openPopup();

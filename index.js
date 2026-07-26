@@ -1,5 +1,5 @@
 // ══════════════════════════════════════════════════════════
-// 穿搭管理器 Outfit Manager v2.1.2
+// 穿搭管理器 Outfit Manager v2.1.3
 // by 温水 & 克洛宜
 // 存储分包架构 · meta + partition
 // ══════════════════════════════════════════════════════════
@@ -12,7 +12,7 @@ import { registerMainFn, preResolveActiveImages } from './src/ui-main.js';
 import { registerSheetsFn, createSheet, closeSheet, getAllTagSuggestions } from './src/ui-sheets.js';
 import { registerBatchFn, initBatchDeps } from './src/ui-batch.js';
 import { injectFab, updateBtn, injectBtn, registerFabFn } from './src/ui-fab.js';
-import { toast } from './src/utils.js';
+import { activateRecovery, deactivateRecovery, injectRecoveryBtn } from './src/ui-recovery.js';
 
 // ── 注册跨模块函数 ─────────────────────────────────────
 registerMainFn();
@@ -27,12 +27,18 @@ injectStyles();
 
 // 初始化存储：探测后端 → 加载 meta → 迁移 → 预加载 partitions
 // 所有依赖数据的操作（注入拦截、悬浮球、按钮）放在回调里
-initStorage(function (err) {
-    if (err) {
-        console.error('[outfit-manager] 初始化失败，已停止启动可写 UI：', err);
-        toast('后端数据读取失败，请刷新或检查服务器', true);
-        return;
+var normalUiStarted = false;
+var recoveryBtnTimer = null;
+
+function startNormalUi() {
+    if (normalUiStarted) return;
+    normalUiStarted = true;
+    if (recoveryBtnTimer) {
+        clearInterval(recoveryBtnTimer);
+        recoveryBtnTimer = null;
     }
+    deactivateRecovery();
+
     // 安装 fetch/XHR 拦截
     setupInjection();
 
@@ -44,4 +50,19 @@ initStorage(function (err) {
 
     updateBtn();
     preResolveActiveImages();
+}
+
+function handleStorageInitialization(err) {
+    if (!err) {
+        startNormalUi();
+        return;
+    }
+    console.error('[outfit-manager] 初始化失败，已进入安全恢复模式：', err);
+    activateRecovery(err, startNormalUi);
+    setTimeout(injectRecoveryBtn, 300);
+    if (!recoveryBtnTimer) recoveryBtnTimer = setInterval(injectRecoveryBtn, 2000);
+}
+
+initStorage(function (err) {
+    handleStorageInitialization(err || null);
 });

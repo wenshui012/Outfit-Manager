@@ -77,11 +77,11 @@ function createFetch(config, requests) {
     }
     return function fetch(url, options) {
         const method = (options && options.method) || 'GET';
-        requests.push({ method, url });
+        requests.push({ method, url, headers: options && options.headers ? clone(options.headers) : null });
         if (method !== 'GET') return Promise.resolve(httpResponse({ status: 200, body: { ok: true } }));
 
         let spec;
-        if (url.endsWith('/status')) spec = take('status', { status: 200, body: { ok: true, version: 2, partitions: true } });
+        if (url.endsWith('/status')) spec = take('status', { status: 200, body: { ok: true, version: 2, partitions: true, recovery: 1, recoveryRevision: 'revision-test' } });
         else if (url.endsWith('/partitions/keys')) spec = take('keys', { status: 200, body: { ok: true, keys: [] } });
         else if (url.includes('/partitions/')) {
             const key = decodeURIComponent(url.slice(url.lastIndexOf('/') + 1));
@@ -194,6 +194,11 @@ async function assertFailureHasNoWrites(env, expectedMessage) {
     assert.equal(env.api.deletePartition(DEFAULT_KEY), false);
     await settle();
     assert.equal(writes(env.requests).length, 0, 'failed initialization must not issue PUT/DELETE');
+    assert.equal(
+        env.requests.filter((request) => request.method !== 'GET').length,
+        0,
+        'failed initialization must not issue any mutating request before explicit recovery'
+    );
     return err;
 }
 
@@ -208,7 +213,13 @@ async function run() {
         assert.equal(writes(env.requests).length, 0, 'hydrate itself should not write normalized data when no change is needed');
         env.api.saveMeta(env.api.loadMeta());
         await settle();
-        assert.ok(writes(env.requests).some((r) => r.method === 'PUT' && r.url.endsWith('/partitions/meta')));
+        const metaWrite = writes(env.requests).find((r) => r.method === 'PUT' && r.url.endsWith('/partitions/meta'));
+        assert.ok(metaWrite);
+        assert.equal(metaWrite.headers['X-OM-Recovery-Revision'], 'revision-test');
+        assert.ok(
+            env.requests.some((request) => request.method === 'POST' && request.url.endsWith('/recovery/checkpoints')),
+            'healthy hydrated data should create a verified checkpoint'
+        );
         results.push({ scenario: 'A', status: 'pass', failureWrites: 0 });
     }
 
@@ -275,14 +286,31 @@ async function run() {
         results.push({ scenario: 'G', status: 'pass', failureWrites: 0 });
     }
 
-    // H. 后端不可用但本地有缓存：本地运行，不产生反向写请求。
+    // H. 明确 404 才视为未安装后端：本地运行，不产生反向写请求。
     {
         const seed = { meta: META, [DEFAULT_KEY]: part('cached'), [PRESET_KEY]: part('cached-preset'), [SHARED_KEY]: part('cached-shared'), [CHAR_KEY]: part('cached-char') };
-        const env = await loadDb({ status: [{ networkError: 'offline' }] }, seed);
+        const env = await loadDb({ status: [{ status: 404, body: { ok: false } }] }, seed);
         assert.equal(await initialize(env), null);
         await settle();
         assert.equal(writes(env.requests).length, 0);
         results.push({ scenario: 'H', status: 'pass', failureWrites: 0 });
+    }
+
+    // I. 状态接口网络/500/协议错误不能伪装成本地模式，必须进入恢复锁定。
+    {
+        const seed = { meta: META, [DEFAULT_KEY]: part('cached') };
+        const networkEnv = await loadDb({ status: [{ networkError: 'offline' }] }, seed);
+        await assertFailureHasNoWrites(networkEnv, /状态检测失败/);
+        assert.equal(networkEnv.api.getStorageHealth().error.code, 'SERVER_STATUS_FAILED');
+        assert.equal(networkEnv.requests.filter((request) => request.url.endsWith('/status')).length, 3);
+
+        const httpEnv = await loadDb({ status: [{ status: 500, body: { ok: false } }] }, seed);
+        await assertFailureHasNoWrites(httpEnv, /状态检测失败/);
+        assert.equal(httpEnv.requests.filter((request) => request.url.endsWith('/status')).length, 3);
+
+        const protocolEnv = await loadDb({ status: [{ status: 200, body: { ok: false } }] }, seed);
+        await assertFailureHasNoWrites(protocolEnv, /状态检测失败/);
+        results.push({ scenario: 'I', status: 'pass', failureWrites: 0 });
     }
 
     // 额外重点：keys 连续失败绝不能进入首次安装。
