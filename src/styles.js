@@ -89,6 +89,12 @@ export function injectStyles() {
             '.om-char-group-hdr i.om-g-arrow{font-size:.7em;transition:transform .15s;width:10px;text-align:center;}',
             '.om-char-group-hdr i.om-g-arrow.collapsed{transform:rotate(-90deg);}',
             '.om-char-group-hdr i.om-g-icon{font-size:.75em;opacity:.6;}',
+            '.om-char-group-title{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}',
+            '.om-char-group-count{opacity:.4;flex-shrink:0;}',
+            '.om-char-group-actions{display:flex;gap:2px;margin-left:auto;flex-shrink:0;}',
+            '.om-char-group-act{background:none;border:none;color:inherit;cursor:pointer;opacity:.55;font-size:.82em;padding:3px 5px;border-radius:4px;}',
+            '.om-char-group-act:hover{opacity:1;background:rgba(127,127,127,.15);}',
+            '.om-char-group-delete:hover{color:#e57373;background:rgba(229,115,115,.12);}',
             /* 角色行 */
             '.om-char-row{display:flex;align-items:center;gap:8px;padding:9px 12px 9px 20px;cursor:pointer;',
             'transition:background .1s;font-size:.9em;}',

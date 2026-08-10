@@ -10,7 +10,8 @@ import {
     charNameById
 } from './db.js';
 import {
-    SHARED_CHAR_KEY, SHARED_CHAR_LABEL
+    SHARED_CHAR_KEY, SHARED_CHAR_LABEL,
+    renameCharGroup, deleteCharGroup
 } from './data.js';
 import { esc, toast } from './utils.js';
 import { injectStyles } from './styles.js';
@@ -371,14 +372,23 @@ function renderCharDropdown(vbar, d, query) {
             '</div></div>';
     }
 
-    function makeSection(title, iconClass, names, gkey) {
+    function makeSection(title, iconClass, names, gkey, managedGroupName) {
         var visNames = names.filter(visible);
-        if (visNames.length === 0) return '';
+        var isManaged = typeof managedGroupName === 'string';
+        if (visNames.length === 0 && (!isManaged || (query && !matchedGroupKeys[managedGroupName]))) return '';
         var isCollapsed = collapsedGroups[gkey];
         var html = '<div class="om-char-group-hdr" data-gkey="' + esc(gkey) + '">' +
             '<i class="fa-solid fa-chevron-down om-g-arrow' + (isCollapsed ? ' collapsed' : '') + '"></i>' +
-            '<i class="' + iconClass + ' om-g-icon"></i> ' + esc(title) +
-            ' <span style="opacity:.4">(' + visNames.length + ')</span></div>';
+            '<i class="' + iconClass + ' om-g-icon"></i>' +
+            '<span class="om-char-group-title">' + esc(title) + '</span>' +
+            '<span class="om-char-group-count">(' + visNames.length + ')</span>' +
+            (isManaged
+                ? '<span class="om-char-group-actions">' +
+                    '<button class="om-char-group-act om-char-group-rename" data-group="' + esc(managedGroupName) + '" title="重命名分组"><i class="fa-solid fa-pen"></i></button>' +
+                    '<button class="om-char-group-act om-char-group-delete" data-group="' + esc(managedGroupName) + '" title="删除分组"><i class="fa-solid fa-trash"></i></button>' +
+                  '</span>'
+                : '') +
+            '</div>';
         if (!isCollapsed) { visNames.forEach(function (cn) { html += makeRow(cn); }); }
         return html;
     }
@@ -400,7 +410,7 @@ function renderCharDropdown(vbar, d, query) {
     listHtml += makeSection('收藏', 'fa-solid fa-star', favNames, '__fav__');
     for (var gn2 in groups) {
         var gNames = (groups[gn2] || []).filter(function (n) { return allNames.indexOf(n) !== -1; });
-        listHtml += makeSection(gn2, 'fa-solid fa-folder', gNames, 'g_' + gn2);
+        listHtml += makeSection(gn2, 'fa-solid fa-folder', gNames, 'g_' + gn2, gn2);
     }
     var ungrouped = allNames.filter(function (n) { return !inGroup[n] && favs.indexOf(n) === -1; });
     if (ungrouped.length > 0) {
@@ -419,6 +429,69 @@ function renderCharDropdown(vbar, d, query) {
         hdr.addEventListener('click', function () {
             collapsedGroups[hdr.dataset.gkey] = !collapsedGroups[hdr.dataset.gkey];
             renderCharDropdown(vbar, load(), query);
+        });
+    });
+    // 自定义分组改名
+    dropdown.querySelectorAll('.om-char-group-rename').forEach(function (btn) {
+        btn.addEventListener('click', function (e) {
+            e.stopPropagation();
+            var oldName = btn.dataset.group;
+            var newName = prompt('重命名分组「' + oldName + '」：', oldName);
+            if (newName === null) return;
+            var dd = load();
+            var result = renameCharGroup(dd, oldName, newName);
+            if (!result.ok) {
+                if (result.code === 'GROUP_NAME_EXISTS') toast('分组「' + newName.trim() + '」已存在', true);
+                else if (result.code !== 'GROUP_NAME_UNCHANGED') toast('分组名称不能为空或使用保留名称', true);
+                return;
+            }
+            var oldCollapseKey = 'g_' + oldName;
+            var newCollapseKey = 'g_' + result.newName;
+            if (Object.prototype.hasOwnProperty.call(collapsedGroups, oldCollapseKey)) {
+                collapsedGroups[newCollapseKey] = collapsedGroups[oldCollapseKey];
+                delete collapsedGroups[oldCollapseKey];
+            }
+            save(dd);
+            renderCharDropdown(vbar, load(), query);
+            toast('分组已重命名为「' + result.newName + '」');
+        });
+    });
+    // 自定义分组删除：1 仅解散；2 连同组内角色衣柜删除
+    dropdown.querySelectorAll('.om-char-group-delete').forEach(function (btn) {
+        btn.addEventListener('click', function (e) {
+            e.stopPropagation();
+            var groupName = btn.dataset.group;
+            var dd = load();
+            var memberSeen = Object.create(null);
+            var members = dd.charGroups && Array.isArray(dd.charGroups[groupName])
+                ? dd.charGroups[groupName].filter(function (name) {
+                    if ((dd.charNames || []).indexOf(name) === -1 || memberSeen[name]) return false;
+                    memberSeen[name] = true;
+                    return true;
+                })
+                : [];
+            var choice = prompt(
+                '删除分组「' + groupName + '」（' + members.length + ' 个角色）：\n' +
+                '1. 仅解散分组，保留角色衣柜\n' +
+                '2. 删除分组及组内所有角色衣柜\n\n请输入 1 或 2：',
+                '1'
+            );
+            if (choice === null) return;
+            choice = choice.trim();
+            if (choice !== '1' && choice !== '2') { toast('请输入 1 或 2', true); return; }
+            var removeWardrobes = choice === '2';
+            if (removeWardrobes) {
+                var preview = members.slice(0, 8).join('、') + (members.length > 8 ? ' 等' : '');
+                if (!confirm('确定删除分组「' + groupName + '」及组内所有角色衣柜？' + (preview ? '\n将删除：' + preview : '') + '\n此操作不可撤销。')) return;
+            }
+            var result = deleteCharGroup(dd, groupName, removeWardrobes);
+            if (!result.ok) { toast('分组不存在或已被删除', true); return; }
+            delete collapsedGroups['g_' + groupName];
+            save(dd);
+            renderViewbar(); renderCatbar(); renderGrid(); renderBottomStatus();
+            toast(removeWardrobes
+                ? '已删除分组及 ' + result.deletedNames.length + ' 个角色衣柜'
+                : '已解散分组「' + groupName + '」，角色衣柜已保留');
         });
     });
     // 选中角色
@@ -466,7 +539,9 @@ function renderCharDropdown(vbar, d, query) {
             if (gNamesList.length === 0) {
                 var gname = prompt('还没有分组，输入新分组名称：');
                 if (!gname || !gname.trim()) return;
-                dd.charGroups[gname.trim()] = [cn]; save(dd); renderCharDropdown(vbar, load(), query);
+                gname = gname.trim();
+                if (!validNewCharGroupName(dd.charGroups, gname)) { toast('分组名称已存在、为空或使用了保留名称', true); return; }
+                dd.charGroups[gname] = [cn]; save(dd); renderCharDropdown(vbar, load(), query);
                 toast('已创建分组并移入'); return;
             }
             var currentGroup = '';
@@ -478,7 +553,13 @@ function renderCharDropdown(vbar, d, query) {
             var ci = parseInt(choice);
             for (var g2 in dd.charGroups) { var ri = dd.charGroups[g2].indexOf(cn); if (ri !== -1) dd.charGroups[g2].splice(ri, 1); }
             if (ci > 0 && ci <= gNamesList.length) { dd.charGroups[gNamesList[ci - 1]].push(cn); toast('已移入「' + gNamesList[ci - 1] + '」'); }
-            else if (ci === gNamesList.length + 1) { var ng = prompt('新分组名称：'); if (ng && ng.trim()) { dd.charGroups[ng.trim()] = [cn]; toast('已创建分组并移入'); } }
+            else if (ci === gNamesList.length + 1) {
+                var ng = prompt('新分组名称：');
+                if (!ng || !ng.trim()) return;
+                ng = ng.trim();
+                if (!validNewCharGroupName(dd.charGroups, ng)) { toast('分组名称已存在、为空或使用了保留名称', true); return; }
+                dd.charGroups[ng] = [cn]; toast('已创建分组并移入');
+            }
             else { toast('已移出分组'); }
             save(dd); renderCharDropdown(vbar, load(), query);
         });
@@ -507,6 +588,11 @@ function renderCharDropdown(vbar, d, query) {
         }
     }
     setTimeout(function () { document.addEventListener('click', closeOnOutside, true); }, 50);
+}
+
+function validNewCharGroupName(groups, name) {
+    if (!name || name === '__proto__' || name === 'prototype' || name === 'constructor') return false;
+    return !Object.prototype.hasOwnProperty.call(groups || {}, name);
 }
 
 function addCharPrompt() {

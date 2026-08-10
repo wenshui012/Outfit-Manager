@@ -296,6 +296,68 @@ export function findCharByName(charIndex, name) {
 }
 
 // ══════════════════════════════════════════════════════════
+//  角色分组辅助（兼容层使用角色名）
+// ══════════════════════════════════════════════════════════
+
+function owns(obj, key) {
+    return Object.prototype.hasOwnProperty.call(obj || {}, key);
+}
+
+function validCharGroupName(name) {
+    return !!name && name !== '__proto__' && name !== 'prototype' && name !== 'constructor';
+}
+
+export function renameCharGroup(d, oldName, newName) {
+    var groups = d && d.charGroups;
+    var target = typeof newName === 'string' ? newName.trim() : '';
+    if (!groups || !owns(groups, oldName)) return { ok: false, code: 'GROUP_NOT_FOUND' };
+    if (!validCharGroupName(target)) return { ok: false, code: 'GROUP_NAME_INVALID' };
+    if (target === oldName) return { ok: false, code: 'GROUP_NAME_UNCHANGED' };
+    if (owns(groups, target)) return { ok: false, code: 'GROUP_NAME_EXISTS' };
+
+    // 重建对象以保留原有分组显示顺序。
+    var renamed = {};
+    Object.keys(groups).forEach(function (name) {
+        renamed[name === oldName ? target : name] = groups[name];
+    });
+    d.charGroups = renamed;
+    return { ok: true, oldName: oldName, newName: target };
+}
+
+export function deleteCharGroup(d, groupName, deleteMembers) {
+    var groups = d && d.charGroups;
+    if (!groups || !owns(groups, groupName)) return { ok: false, code: 'GROUP_NOT_FOUND', deletedNames: [] };
+
+    var seen = Object.create(null);
+    var members = [];
+    (groups[groupName] || []).forEach(function (name) {
+        if (typeof name !== 'string' || !name || seen[name]) return;
+        seen[name] = true;
+        members.push(name);
+    });
+    delete groups[groupName];
+
+    if (!deleteMembers) return { ok: true, deletedNames: [], releasedNames: members };
+
+    var existing = Object.create(null);
+    (d.charNames || []).forEach(function (name) { existing[name] = true; });
+    var deletedNames = members.filter(function (name) { return existing[name]; });
+    var deleting = Object.create(null);
+    deletedNames.forEach(function (name) {
+        deleting[name] = true;
+        if (d.chars) delete d.chars[name];
+    });
+    d.charNames = (d.charNames || []).filter(function (name) { return !deleting[name]; });
+    d.charFavorites = (d.charFavorites || []).filter(function (name) { return !deleting[name]; });
+    Object.keys(groups).forEach(function (name) {
+        groups[name] = (groups[name] || []).filter(function (charName) { return !deleting[charName]; });
+    });
+    if (deleting[d.currentChar]) d.currentChar = SHARED_CHAR_KEY;
+
+    return { ok: true, deletedNames: deletedNames, releasedNames: [] };
+}
+
+// ══════════════════════════════════════════════════════════
 //  兼容旧接口（过渡期，供还没改完的模块使用）
 // ══════════════════════════════════════════════════════════
 
