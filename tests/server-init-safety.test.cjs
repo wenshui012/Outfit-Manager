@@ -89,7 +89,7 @@ function createFetch(config, requests) {
         }
 
         let spec;
-        if (url.endsWith('/status')) spec = take('status', { status: 200, body: { ok: true, version: 2, partitions: true, partitionTransactions: true, recovery: 1, recoveryRevision: 'revision-test' } });
+        if (url.endsWith('/status')) spec = take('status', { status: 200, body: { ok: true, version: 2, pluginVersion: '2.0.3', partitions: true, partitionTransactions: true, recovery: 1, recoveryRevision: 'revision-test' } });
         else if (url.endsWith('/partitions/keys')) spec = take('keys', { status: 200, body: { ok: true, keys: [] } });
         else if (url.includes('/partitions/')) {
             const key = decodeURIComponent(url.slice(url.lastIndexOf('/') + 1));
@@ -226,6 +226,9 @@ async function run() {
     {
         const env = await loadDb(successfulConfig());
         assert.equal(await initialize(env), null);
+        assert.equal(env.api.getStorageHealth().serverPluginVersion, '2.0.3');
+        assert.equal(env.api.getStorageHealth().minimumServerPluginVersion, '2.0.3');
+        assert.equal(env.api.getStorageHealth().serverPluginUpdateRecommended, false);
         assert.ok(env.requests.findIndex((r) => r.url.endsWith('/partitions/meta')) < env.requests.findIndex((r) => r.url.endsWith('/partitions/' + encodeURIComponent(PRESET_KEY))));
         assert.equal(writes(env.requests).length, 0, 'hydrate itself should not write normalized data when no change is needed');
         env.api.saveMeta(env.api.loadMeta());
@@ -260,6 +263,8 @@ async function run() {
             status: [{ status: 200, body: { ok: true, version: 2, partitions: true, recovery: 1, recoveryRevision: 'revision-test' } }]
         }));
         assert.equal(await initialize(env), null);
+        assert.equal(env.api.getStorageHealth().serverPluginVersion, null);
+        assert.equal(env.api.getStorageHealth().serverPluginUpdateRecommended, true, 'legacy backend without a release version should recommend an update');
         env.api.saveMeta(env.api.loadMeta());
         await settle();
         assert.ok(writes(env.requests).some((request) => request.method === 'PUT' && request.url.endsWith('/partitions/meta')));

@@ -27,6 +27,7 @@ var LEGACY_DATA_KEY = 'main';
 
 var SERVER_BASE = '/api/plugins/outfit-manager';
 var IMAGE_URL_PREFIX = SERVER_BASE + '/images/';
+var MIN_SERVER_PLUGIN_VERSION = '2.0.3';
 
 // ── 内存缓存 ─────────────────────────────────────────────
 var dbInstance = null;
@@ -34,6 +35,8 @@ var metaCache = null;           // meta 对象
 var partCache = {};             // { partKey: partition }
 var serverMode = false;
 var serverVersion = 1;
+var serverPluginVersion = null;
+var serverPluginUpdateRecommended = false;
 var serverSupportsPartitions = false;
 var serverSupportsRecovery = false;
 var serverSupportsPartitionTransactions = false;
@@ -65,6 +68,20 @@ var partitionDeleteRetryTimer = null;
 var SERVER_READ_MAX_ATTEMPTS = 3;
 var SERVER_READ_RETRY_MS = 150;
 var checkpointTimer = null;
+
+function isPluginVersionAtLeast(value, minimum) {
+    var actual = typeof value === 'string' ? value.match(/^(\d+)\.(\d+)\.(\d+)(?:-([0-9A-Za-z.-]+))?(?:\+[0-9A-Za-z.-]+)?$/) : null;
+    var required = typeof minimum === 'string' ? minimum.match(/^(\d+)\.(\d+)\.(\d+)$/) : null;
+    if (!actual || !required) return false;
+    for (var i = 1; i <= 3; i++) {
+        var left = Number(actual[i]);
+        var right = Number(required[i]);
+        if (left > right) return true;
+        if (left < right) return false;
+    }
+    // A prerelease of the minimum stable version is not considered current.
+    return !actual[4];
+}
 
 // ══════════════════════════════════════════════════════════
 //  IndexedDB 底层
@@ -217,6 +234,8 @@ function detectServer(cb) {
     }, function (result) {
         if (result.ok && !result.found) {
             forgetConfirmedServer();
+            serverPluginVersion = null;
+            serverPluginUpdateRecommended = false;
             serverRecoveryRevision = null;
             serverSupportsRecovery = false;
             serverSupportsPartitionTransactions = false;
@@ -229,6 +248,8 @@ function detectServer(cb) {
             // 纯前端环境对不存在的插件路由不一定返回标准 404，也可能表现为网络、
             // 代理或 HTML 解析错误。只有曾成功识别过后端，才把这类失败升级为恢复锁定。
             if (!serverWasConfirmed) {
+                serverPluginVersion = null;
+                serverPluginUpdateRecommended = false;
                 serverRecoveryRevision = null;
                 serverSupportsRecovery = false;
                 try { console.warn('[outfit-manager] 未确认安装后端，已使用本地存储模式。', result); } catch (e) {}
@@ -254,6 +275,8 @@ function detectServer(cb) {
         }
         var body = result.data;
         serverVersion = body.version || 1;
+        serverPluginVersion = typeof body.pluginVersion === 'string' ? body.pluginVersion : null;
+        serverPluginUpdateRecommended = !isPluginVersionAtLeast(serverPluginVersion, MIN_SERVER_PLUGIN_VERSION);
         serverSupportsPartitions = serverVersion >= 2 && body.partitions === true;
         serverSupportsRecovery = Number(body.recovery || 0) >= 1;
         serverSupportsPartitionTransactions = body.partitionTransactions === true;
@@ -1070,6 +1093,9 @@ export function getStorageHealth() {
     return {
         serverMode: serverMode,
         serverVersion: serverVersion,
+        serverPluginVersion: serverPluginVersion,
+        minimumServerPluginVersion: MIN_SERVER_PLUGIN_VERSION,
+        serverPluginUpdateRecommended: serverPluginUpdateRecommended,
         serverSupportsPartitions: serverSupportsPartitions,
         serverSupportsRecovery: serverSupportsRecovery,
         serverSupportsPartitionTransactions: serverSupportsPartitionTransactions,
@@ -1657,6 +1683,8 @@ export function initStorage(cb) {
     serverHydrated = false;
     serverInitFailed = false;
     lastInitializationError = null;
+    serverPluginVersion = null;
+    serverPluginUpdateRecommended = false;
     serverStorageState = null;
     serverRecoveryResult = null;
     serverSupportsPartitionTransactions = false;

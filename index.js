@@ -31,6 +31,7 @@ injectStyles();
 var normalUiStarted = false;
 var recoveryBtnTimer = null;
 var recoveryToastShown = false;
+var backendUpdateToastShown = false;
 
 function startNormalUi() {
     if (normalUiStarted) return;
@@ -60,6 +61,11 @@ function handleStorageInitialization(err) {
         if (!recoveryToastShown && health.serverRecoveryResult && health.serverRecoveryResult.recovered === true) {
             recoveryToastShown = true;
             toast('检测到衣柜索引异常，已根据可信的后端数据安全恢复。');
+        }
+        if (!backendUpdateToastShown && health.serverMode && health.serverPluginUpdateRecommended) {
+            backendUpdateToastShown = true;
+            var currentVersion = health.serverPluginVersion || '旧版（未报告版本）';
+            toast('穿搭管理器后端需要更新：当前 ' + currentVersion + '，最低 ' + health.minimumServerPluginVersion + '。请重启 SillyTavern；若仍提示，请检查后端自动更新设置。', true);
         }
         startNormalUi();
         return;

@@ -107,6 +107,8 @@ SillyTavern 穿搭管理插件 —— 让 AI 不再为角色乱编服装。
 
 使用后端前请确认 SillyTavern 已开启 server plugin，并定期备份后端插件目录下的 `data/`。如果后端不可用，插件会尽量回退到本地存储；恢复后端前建议先导出完整备份。
 
+后端建议通过 Git 安装，并在 SillyTavern 的 `config.yaml` 中启用 `enableServerPluginsAutoUpdate: true`。SillyTavern 会在启动时尝试更新 server plugin；穿搭管理器检测到后端低于最低兼容版本时会提示重启或检查自动更新设置。ZIP/手动复制安装的后端不能依赖该更新机制。
+
 ## Bug 反馈请提供
 
 - 插件版本号和 SillyTavern 版本
