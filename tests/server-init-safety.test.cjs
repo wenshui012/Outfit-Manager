@@ -77,11 +77,19 @@ function createFetch(config, requests) {
     }
     return function fetch(url, options) {
         const method = (options && options.method) || 'GET';
-        requests.push({ method, url, headers: options && options.headers ? clone(options.headers) : null });
-        if (method !== 'GET') return Promise.resolve(httpResponse({ status: 200, body: { ok: true } }));
+        requests.push({ method, url, headers: options && options.headers ? clone(options.headers) : null, body: options && options.body });
+        if (method !== 'GET') {
+            let name = 'write';
+            if (url.includes('/partitions/')) name = 'write:' + decodeURIComponent(url.slice(url.lastIndexOf('/') + 1));
+            else if (url.endsWith('/recovery/checkpoints')) name = 'checkpoint';
+            const spec = take(name, { status: 200, body: { ok: true } });
+            const respond = () => spec.networkError ? Promise.reject(new Error(spec.networkError)) : Promise.resolve(httpResponse(spec));
+            if (spec.delay) return new Promise((resolve) => setTimeout(resolve, spec.delay)).then(respond);
+            return respond();
+        }
 
         let spec;
-        if (url.endsWith('/status')) spec = take('status', { status: 200, body: { ok: true, version: 2, partitions: true, recovery: 1, recoveryRevision: 'revision-test' } });
+        if (url.endsWith('/status')) spec = take('status', { status: 200, body: { ok: true, version: 2, partitions: true, partitionTransactions: true, recovery: 1, recoveryRevision: 'revision-test' } });
         else if (url.endsWith('/partitions/keys')) spec = take('keys', { status: 200, body: { ok: true, keys: [] } });
         else if (url.includes('/partitions/')) {
             const key = decodeURIComponent(url.slice(url.lastIndexOf('/') + 1));
@@ -153,15 +161,17 @@ const CHAR_KEY = 'char:c_ABC12345';
 const ALL_KEYS = ['meta', DEFAULT_KEY, PRESET_KEY, SHARED_KEY, CHAR_KEY];
 const META = {
     _version: 2,
-    presets: [{ id: 'preset-1', name: 'Preset', partKey: PRESET_KEY }],
-    activePresetId: 'preset-1',
+    presets: [{ id: 'p_ABC12345', name: 'Preset', partKey: PRESET_KEY }],
+    activePresetId: 'p_ABC12345',
     charIndex: [
         { id: '__shared__', name: '__shared__', partKey: SHARED_KEY },
         { id: 'c_ABC12345', name: 'Alice', partKey: CHAR_KEY }
     ],
     charFavorites: [],
     charGroups: {},
-    activePartitions: {}
+    activePartitions: {},
+    currentView: 'user',
+    currentChar: ''
 };
 
 function successfulConfig(overrides) {
@@ -220,7 +230,7 @@ async function run() {
         assert.equal(writes(env.requests).length, 0, 'hydrate itself should not write normalized data when no change is needed');
         env.api.saveMeta(env.api.loadMeta());
         await settle();
-        const metaWrite = writes(env.requests).find((r) => r.method === 'PUT' && r.url.endsWith('/partitions/meta'));
+        const metaWrite = writes(env.requests).find((r) => r.method === 'PUT' && r.url.endsWith('/partitions/batch'));
         assert.ok(metaWrite);
         assert.equal(metaWrite.headers['X-OM-Recovery-Revision'], 'revision-test');
         assert.ok(
@@ -242,6 +252,19 @@ async function run() {
         assert.equal(countGets(env.requests, 'meta'), 2);
         assert.equal(writes(env.requests).length, 0);
         results.push({ scenario: 'B', status: 'pass', failureWrites: 0 });
+    }
+
+    // 旧 v2 后端未声明 batch transaction 时仍保留逐分包兼容路径。
+    {
+        const env = await loadDb(successfulConfig({
+            status: [{ status: 200, body: { ok: true, version: 2, partitions: true, recovery: 1, recoveryRevision: 'revision-test' } }]
+        }));
+        assert.equal(await initialize(env), null);
+        env.api.saveMeta(env.api.loadMeta());
+        await settle();
+        assert.ok(writes(env.requests).some((request) => request.method === 'PUT' && request.url.endsWith('/partitions/meta')));
+        assert.equal(writes(env.requests).some((request) => request.url.endsWith('/partitions/batch')), false);
+        results.push({ scenario: 'old-v2-write-fallback', status: 'pass', failureWrites: 0 });
     }
 
     // C. meta 连续失败：中止，保留本地缓存，不写服务器。
@@ -280,15 +303,15 @@ async function run() {
         results.push({ scenario: 'F', status: 'pass', failureWrites: 0 });
     }
 
-    // G. 明确空 keys 才执行首次安装，并创建 meta/default/shared。
+    // G. 明确空 keys 才执行首次安装，并通过 /data 数据集事务一次提交。
     {
         const env = await loadDb({ keys: [{ status: 200, body: { ok: true, keys: [] } }] });
         assert.equal(await initialize(env), null);
         await settle();
-        const putUrls = writes(env.requests).filter((r) => r.method === 'PUT').map((r) => r.url);
-        assert.ok(putUrls.some((url) => url.endsWith('/partitions/meta')));
-        assert.ok(putUrls.some((url) => url.endsWith('/partitions/' + encodeURIComponent(DEFAULT_KEY))));
-        assert.ok(putUrls.some((url) => url.endsWith('/partitions/' + encodeURIComponent(SHARED_KEY))));
+        const dataPuts = writes(env.requests).filter((r) => r.method === 'PUT' && r.url.endsWith('/partitions/batch'));
+        assert.equal(dataPuts.length, 1);
+        const uploaded = JSON.parse(dataPuts[0].body);
+        assert.ok(uploaded.meta && uploaded.partitions[DEFAULT_KEY] && uploaded.partitions[SHARED_KEY]);
         assert.equal(writes(env.requests).filter((r) => r.method === 'DELETE').length, 0);
         results.push({ scenario: 'G', status: 'pass', failureWrites: 0 });
     }
@@ -380,6 +403,73 @@ async function run() {
         await assertFailureHasNoWrites(unexpectedEnv, /分包索引读取失败/);
         assert.equal(unexpectedEnv.requests.filter((r) => r.url.endsWith('/partitions/keys')).length, 1);
         results.push({ scenario: 'read-protocol', status: 'pass', failureWrites: 0 });
+    }
+
+    // 新后端明确分类 META_MISSING / META_CORRUPT 时，前端不再读 keys，更不会用本地空数据反向覆盖。
+    for (const state of ['META_MISSING', 'META_CORRUPT']) {
+        const env = await loadDb({
+            status: [{ status: 200, body: {
+                ok: true, version: 2, partitions: true, recovery: 1,
+                storageState: state, recoveryResult: { attempted: true, recovered: false }
+            } }]
+        });
+        const err = await assertFailureHasNoWrites(env, state === 'META_MISSING' ? /索引缺失/ : /索引损坏/);
+        assert.equal(err.code, state);
+        assert.equal(env.requests.filter((request) => request.url.endsWith('/partitions/keys')).length, 0);
+    }
+    results.push({ scenario: 'explicit-storage-state', status: 'pass', failureWrites: 0 });
+
+    // JSON.parse 成功的 {} 也必须被判为 META schema 错误，不能 ensure defaults 后继续。
+    {
+        const env = await loadDb(successfulConfig({
+            'part:meta': [{ status: 200, body: { ok: true, data: {} } }]
+        }));
+        const err = await assertFailureHasNoWrites(env, /meta\._version/);
+        assert.equal(err.code, 'META_SCHEMA_INVALID');
+        results.push({ scenario: 'empty-meta-rejected', status: 'pass', failureWrites: 0 });
+    }
+
+    // PUT 失败时保留当前最新 revision：旧请求结束后只能重试最新快照。
+    {
+        const env = await loadDb(successfulConfig({
+            ['write:' + DEFAULT_KEY]: [
+                { status: 500, body: { ok: false }, delay: 12 },
+                { status: 200, body: { ok: true } }
+            ]
+        }));
+        assert.equal(await initialize(env), null);
+        env.api.savePartition(DEFAULT_KEY, part('revision-1'));
+        await new Promise((resolve) => setTimeout(resolve, 6));
+        env.api.savePartition(DEFAULT_KEY, part('revision-2'));
+        await new Promise((resolve) => setTimeout(resolve, 70));
+        const puts = env.requests.filter((request) => request.method === 'PUT' && request.url.endsWith('/partitions/' + encodeURIComponent(DEFAULT_KEY)));
+        assert.equal(puts.length, 2);
+        assert.equal(JSON.parse(puts[0].body).outfits[0].id, 'revision-1');
+        assert.equal(JSON.parse(puts[1].body).outfits[0].id, 'revision-2');
+        results.push({ scenario: 'failed-put-latest-revision', status: 'pass', failureWrites: 0 });
+    }
+
+    // 删除随最新 meta revision 进入 /data journal；失败只重试最新完整数据集，不先发 DELETE。
+    {
+        const env = await loadDb(successfulConfig({
+            'write:batch': [
+                { status: 500, body: { ok: false } },
+                { status: 200, body: { ok: true } }
+            ]
+        }));
+        assert.equal(await initialize(env), null);
+        env.api.deletePartition(CHAR_KEY);
+        var changedMeta = env.api.loadMeta();
+        changedMeta.charIndex = changedMeta.charIndex.filter((item) => item.partKey !== CHAR_KEY);
+        env.api.saveMeta(changedMeta);
+        await new Promise((resolve) => setTimeout(resolve, 70));
+        const mutations = env.requests.filter((request) =>
+            (request.method === 'PUT' && request.url.endsWith('/partitions/batch')) ||
+            (request.method === 'DELETE' && request.url.endsWith('/partitions/' + encodeURIComponent(CHAR_KEY)))
+        );
+        assert.deepEqual(mutations.map((request) => request.method), ['PUT', 'PUT']);
+        assert.equal(Object.prototype.hasOwnProperty.call(JSON.parse(mutations[1].body).partitions, CHAR_KEY), false);
+        results.push({ scenario: 'meta-before-delete', status: 'pass', failureWrites: 0 });
     }
 
     for (const result of results) console.log(`${result.scenario}: ${result.status}; failed-init PUT/DELETE=${result.failureWrites}`);

@@ -36,24 +36,32 @@ var serverMode = false;
 var serverVersion = 1;
 var serverSupportsPartitions = false;
 var serverSupportsRecovery = false;
+var serverSupportsPartitionTransactions = false;
 // v2 后端必须完整 hydrate 后才能写。读取失败绝不能被当作“空数据”后反向覆盖服务器。
 var serverHydrated = false;
 var serverInitFailed = false;
 var lastInitializationError = null;
 var serverRecoveryRevision = null;
+var serverStorageState = null;
+var serverRecoveryResult = null;
+var suppressServerWrites = false;
 var csrfToken = null;
 
 // server PUT 防抖（v1 全量模式）
 var serverDirty = false;
+var serverRevision = 0;
 var serverDebounceTimer = null;
 var serverPutInFlight = false;
 var SERVER_DEBOUNCE_MS = 1000;
 
 // server PUT 防抖（v2 分包模式）
-var dirtyPartKeys = {};         // { partKey: true }
+var dirtyPartKeys = {};         // { partKey: latestRevision }
+var partRevisions = {};         // 单调 revision；失败时只重试当前最新值
 var partFlushTimer = null;
 var partFlushInFlight = false;
 var deletedPartKeys = {};       // tombstone：已删除的 key，防止 in-flight PUT 复活
+var pendingPartitionDeletes = {}; // meta/local commit 后才真正删除 partition
+var partitionDeleteRetryTimer = null;
 var SERVER_READ_MAX_ATTEMPTS = 3;
 var SERVER_READ_RETRY_MS = 150;
 var checkpointTimer = null;
@@ -87,22 +95,22 @@ function idbGet(key, cb) {
 // 通用：写单个 key
 function idbPut(key, value, cb) {
     openDB(function (db) {
-        if (!db) { if (cb) cb(); return; }
+        if (!db) { if (cb) cb(false); return; }
         var tx = db.transaction(STORE_NAME, 'readwrite');
         tx.objectStore(STORE_NAME).put(value, key);
-        tx.oncomplete = function () { if (cb) cb(); };
-        tx.onerror = function () { if (cb) cb(); };
+        tx.oncomplete = function () { if (cb) cb(true); };
+        tx.onerror = function () { if (cb) cb(false); };
     });
 }
 
 // 通用：删除单个 key
 function idbDelete(key, cb) {
     openDB(function (db) {
-        if (!db) { if (cb) cb(); return; }
+        if (!db) { if (cb) cb(false); return; }
         var tx = db.transaction(STORE_NAME, 'readwrite');
         tx.objectStore(STORE_NAME).delete(key);
-        tx.oncomplete = function () { if (cb) cb(); };
-        tx.onerror = function () { if (cb) cb(); };
+        tx.oncomplete = function () { if (cb) cb(true); };
+        tx.onerror = function () { if (cb) cb(false); };
     });
 }
 
@@ -211,6 +219,9 @@ function detectServer(cb) {
             forgetConfirmedServer();
             serverRecoveryRevision = null;
             serverSupportsRecovery = false;
+            serverSupportsPartitionTransactions = false;
+            serverStorageState = null;
+            serverRecoveryResult = null;
             cb({ installed: false, ok: true, status: 404, kind: 'not_installed', error: null, attempts: result.attempts });
             return;
         }
@@ -245,7 +256,10 @@ function detectServer(cb) {
         serverVersion = body.version || 1;
         serverSupportsPartitions = serverVersion >= 2 && body.partitions === true;
         serverSupportsRecovery = Number(body.recovery || 0) >= 1;
+        serverSupportsPartitionTransactions = body.partitionTransactions === true;
         serverRecoveryRevision = typeof body.recoveryRevision === 'string' ? body.recoveryRevision : null;
+        serverStorageState = typeof body.storageState === 'string' ? body.storageState : null;
+        serverRecoveryResult = body.recoveryResult && typeof body.recoveryResult === 'object' ? body.recoveryResult : null;
         rememberConfirmedServer();
         cb({ installed: true, ok: true, status: result.status, kind: null, error: null, attempts: result.attempts });
     });
@@ -303,36 +317,47 @@ function serverPutFull() {
 
 function doServerPut() {
     var full = reassembleFullData();
+    var raw;
+    try { raw = JSON.stringify(full); }
+    catch (err) { serverDirty = true; scheduleServerPutRetry(); return; }
     serverPutInFlight = true;
+    var revisionAtDispatch = serverRevision;
+    var succeeded = false;
     getWriteHeaders().then(function (headers) {
         return fetch(SERVER_BASE + '/data', {
             method: 'PUT',
             credentials: 'same-origin',
             headers: headers,
-            body: JSON.stringify(full)
+            body: raw
         });
     }).then(function (r) {
         if (r && r.status === 403) { csrfToken = null; }
-    }).catch(function () {}).then(function () {
+        succeeded = !!(r && r.ok);
+    }).catch(function () { succeeded = false; }).then(function () {
         serverPutInFlight = false;
+        if (!succeeded || revisionAtDispatch !== serverRevision) serverDirty = true;
         if (serverDirty) {
-            serverDirty = false;
-            serverPutFull();
+            scheduleServerPutRetry();
         }
     });
 }
 
-function scheduleServerPut() {
-    if (!serverMode) return;
-    serverDirty = true;
+function scheduleServerPutRetry() {
     if (serverDebounceTimer) clearTimeout(serverDebounceTimer);
     serverDebounceTimer = setTimeout(function () {
         serverDebounceTimer = null;
-        if (serverDirty) {
-            serverDirty = false;
-            serverPutFull();
-        }
+        if (serverPutInFlight || !serverDirty) return;
+        serverDirty = false;
+        serverPutFull();
     }, SERVER_DEBOUNCE_MS);
+}
+
+function scheduleServerPut() {
+    if (!serverMode) return;
+    serverRevision++;
+    serverDirty = true;
+    if (serverDebounceTimer) clearTimeout(serverDebounceTimer);
+    scheduleServerPutRetry();
 }
 
 // ── v2 分包模式 server 通信 ─────────────────────────────
@@ -340,17 +365,24 @@ function scheduleServerPut() {
 // 统一调度：根据后端版本选择全量或分包
 function scheduleServerPutKey(key) {
     if (!serverMode) return;
+    if (suppressServerWrites) return;
     if (!serverSupportsPartitions) {
         scheduleServerPut(); // v1 后端走全量
         return;
     }
     if (!serverHydrated || serverInitFailed) return;
-    dirtyPartKeys[key] = true;
+    var revision = (partRevisions[key] || 0) + 1;
+    partRevisions[key] = revision;
+    dirtyPartKeys[key] = revision;
+    schedulePartitionFlush();
+}
+
+function schedulePartitionFlush(delay) {
     if (partFlushTimer) clearTimeout(partFlushTimer);
     partFlushTimer = setTimeout(function () {
         partFlushTimer = null;
         flushDirtyPartitions();
-    }, SERVER_DEBOUNCE_MS);
+    }, delay === undefined ? SERVER_DEBOUNCE_MS : delay);
 }
 
 // 批量 flush 所有 dirty key
@@ -360,71 +392,165 @@ function flushDirtyPartitions() {
         return;
     }
     if (partFlushInFlight) return;
-    var keys = Object.keys(dirtyPartKeys);
+    var keys = Object.keys(dirtyPartKeys).sort(function (a, b) {
+        if (a === 'meta') return 1;
+        if (b === 'meta') return -1;
+        return a.localeCompare(b);
+    });
     if (keys.length === 0) return;
+    var batch = keys.map(function (key) { return { key: key, revision: dirtyPartKeys[key] }; });
     dirtyPartKeys = {};
     partFlushInFlight = true;
-
-    var pending = keys.length;
     var allSucceeded = true;
-    function done(ok) {
-        if (ok === false) allSucceeded = false;
-        pending--;
-        if (pending <= 0) {
-            partFlushInFlight = false;
-            if (allSucceeded) scheduleServerCheckpoint();
-            // 如果 flush 期间又有新 dirty key，再调度一轮
-            if (Object.keys(dirtyPartKeys).length > 0) {
-                flushDirtyPartitions();
-            }
-        }
+    var index = 0;
+
+    function finish() {
+        partFlushInFlight = false;
+        if (allSucceeded) scheduleServerCheckpoint();
+        if (Object.keys(dirtyPartKeys).length > 0) schedulePartitionFlush(allSucceeded ? 0 : SERVER_DEBOUNCE_MS);
     }
-    keys.forEach(function (key) {
+
+    function next() {
+        if (index >= batch.length) { finish(); return; }
+        var entry = batch[index++];
+        var key = entry.key;
         // 跳过已被删除的 key（tombstone 防复活）
-        if (deletedPartKeys[key]) { done(); return; }
+        if (deletedPartKeys[key]) { next(); return; }
         var data = (key === 'meta') ? metaCache : partCache[key];
-        if (!data) { done(); return; }
-        serverPutPartition(key, data, done);
-    });
+        if (!data) { next(); return; }
+        serverPutPartition(key, data, function (ok) {
+            if (!ok) {
+                allSucceeded = false;
+                var latest = partRevisions[key] || entry.revision;
+                if (!deletedPartKeys[key]) dirtyPartKeys[key] = latest;
+            } else if (key === 'meta' && partRevisions[key] === entry.revision) {
+                // 只有当前最新 meta revision 成功后，才能提交此前登记的分包删除。
+                commitPendingPartitionDeletes(true);
+            }
+            next();
+        });
+    }
+    var metaEntry = batch.find(function (entry) { return entry.key === 'meta'; });
+    if (metaEntry && serverSupportsPartitionTransactions) {
+        serverPutPartitionDataset(function (ok) {
+            if (!ok) {
+                allSucceeded = false;
+                batch.forEach(function (entry) {
+                    if (!deletedPartKeys[entry.key]) dirtyPartKeys[entry.key] = partRevisions[entry.key] || entry.revision;
+                });
+            } else if (partRevisions.meta === metaEntry.revision) {
+                markDatasetDeletesCommitted();
+            }
+            finish();
+        });
+        return;
+    }
+    next();
+}
+
+function serverPutPartitionDataset(cb) {
+    var meta = metaCache || defMeta();
+    var partitions = {};
+    var keys = collectRequiredPartKeys(meta);
+    for (var i = 0; i < keys.length; i++) {
+        if (!partCache[keys[i]]) { cb(false); return; }
+        partitions[keys[i]] = partCache[keys[i]];
+    }
+    var raw;
+    try { raw = JSON.stringify({ meta: meta, partitions: partitions }); }
+    catch (err) { cb(false); return; }
+    getWriteHeaders().then(function (headers) {
+        return fetch(SERVER_BASE + '/partitions/batch', {
+            method: 'PUT', credentials: 'same-origin', headers: headers, body: raw
+        });
+    }).then(function (res) {
+        if (res && res.status === 403) csrfToken = null;
+        cb(!!(res && res.ok));
+    }).catch(function () { cb(false); });
 }
 
 // PUT 单个 partition 到 v2 后端
 function serverPutPartition(key, data, cb) {
     if (!serverHydrated || serverInitFailed) { if (cb) cb(false); return; }
+    var raw;
+    try { raw = JSON.stringify(data); }
+    catch (err) { if (cb) cb(false); return; }
     var succeeded = false;
     getWriteHeaders().then(function (headers) {
         return fetch(SERVER_BASE + '/partitions/' + encodeURIComponent(key), {
             method: 'PUT',
             credentials: 'same-origin',
             headers: headers,
-            body: JSON.stringify(data)
+            body: raw
         });
     }).then(function (r) {
         if (r && r.status === 403) { csrfToken = null; }
         succeeded = !!(r && r.ok);
     }).catch(function () { succeeded = false; }).then(function () {
-        // PUT 完成后检查：如果此 key 在 PUT 期间被删除了，补发 DELETE
-        if (deletedPartKeys[key]) {
-            sendDeletePartition(key);
-        }
         if (cb) cb(succeeded);
     });
 }
 
-// DELETE 单个 partition（立即发送，不防抖）
-function serverDeletePartition(key) {
-    if (!serverMode || !serverSupportsPartitions) return;
-    if (!serverHydrated || serverInitFailed) return;
-    // 标记 tombstone，防止 in-flight PUT 复活此 key
-    deletedPartKeys[key] = true;
-    // 从 dirty 队列移除（已删的不需要再 PUT）
-    delete dirtyPartKeys[key];
-    sendDeletePartition(key);
+function metaReferencesPartition(key) {
+    if (key === 'user:__default__') return true;
+    var meta = metaCache || {};
+    var referenced = false;
+    (meta.presets || []).forEach(function (item) { if (item && item.partKey === key) referenced = true; });
+    (meta.charIndex || []).forEach(function (item) { if (item && item.partKey === key) referenced = true; });
+    return referenced;
 }
 
-// 底层 DELETE 发送（serverDeletePartition 和 PUT 后补删都调用这里）
-function sendDeletePartition(key) {
-    if (!serverHydrated || serverInitFailed) return;
+function commitPendingPartitionDeletes(serverSide) {
+    function retry() {
+        if (partitionDeleteRetryTimer) return;
+        partitionDeleteRetryTimer = setTimeout(function () {
+            partitionDeleteRetryTimer = null;
+            commitPendingPartitionDeletes(serverMode && serverSupportsPartitions);
+        }, SERVER_DEBOUNCE_MS);
+    }
+    function finishIfDone(key, pending) {
+        var serverDone = !serverMode || !serverSupportsPartitions || pending.serverCommitted;
+        if (pending.localCommitted && serverDone) delete pendingPartitionDeletes[key];
+    }
+    Object.keys(pendingPartitionDeletes).forEach(function (key) {
+        var pending = pendingPartitionDeletes[key];
+        if (!pending || metaReferencesPartition(key)) return;
+        if (!pending.localCommitted && !pending.localInFlight) {
+            pending.localInFlight = true;
+            idbDelete(key, function (ok) {
+                pending.localInFlight = false;
+                pending.localCommitted = !!ok;
+                if (!ok) retry();
+                finishIfDone(key, pending);
+            });
+        }
+        if (serverSide && serverMode && serverSupportsPartitions && !pending.serverCommitted && !pending.serverInFlight) {
+            pending.serverInFlight = true;
+            sendDeletePartition(key, function (ok) {
+                pending.serverInFlight = false;
+                pending.serverCommitted = !!ok;
+                if (!ok) {
+                    retry();
+                    return;
+                }
+                finishIfDone(key, pending);
+            });
+        }
+        finishIfDone(key, pending);
+    });
+}
+
+function markDatasetDeletesCommitted() {
+    Object.keys(pendingPartitionDeletes).forEach(function (key) {
+        var pending = pendingPartitionDeletes[key];
+        if (pending && !metaReferencesPartition(key)) pending.serverCommitted = true;
+    });
+    commitPendingPartitionDeletes(false);
+}
+
+// 旧 v2 后端没有 batch 事务时，meta 成功后才会走这个兼容 DELETE。
+function sendDeletePartition(key, cb) {
+    if (!serverHydrated || serverInitFailed) { if (cb) cb(false); return; }
     var succeeded = false;
     getWriteHeaders().then(function (headers) {
         return fetch(SERVER_BASE + '/partitions/' + encodeURIComponent(key), {
@@ -437,6 +563,7 @@ function sendDeletePartition(key) {
         succeeded = !!(r && r.ok);
     }).catch(function () { succeeded = false; }).then(function () {
         if (succeeded) scheduleServerCheckpoint();
+        if (cb) cb(succeeded);
     });
 }
 
@@ -747,7 +874,9 @@ export function loadMeta() {
 export function saveMeta(meta) {
     if (serverInitFailed) return false;
     metaCache = meta;
-    idbPut('meta', meta);
+    idbPut('meta', meta, function (ok) {
+        if (ok) commitPendingPartitionDeletes(false);
+    });
     scheduleServerPutKey('meta');
     return true;
 }
@@ -770,6 +899,7 @@ export function savePartition(partKey, data) {
     if (serverInitFailed) return false;
     partCache[partKey] = data;
     delete deletedPartKeys[partKey];
+    delete pendingPartitionDeletes[partKey];
     idbPut(partKey, data);
     scheduleServerPutKey(partKey);
     return true;
@@ -789,8 +919,14 @@ export function ensurePartition(partKey, cb) {
 export function deletePartition(partKey) {
     if (serverInitFailed) return false;
     delete partCache[partKey];
-    idbDelete(partKey);
-    serverDeletePartition(partKey);
+    deletedPartKeys[partKey] = true;
+    delete dirtyPartKeys[partKey];
+    pendingPartitionDeletes[partKey] = pendingPartitionDeletes[partKey] || {
+        localCommitted: false,
+        localInFlight: false,
+        serverCommitted: false,
+        serverInFlight: false
+    };
     return true;
 }
 
@@ -936,6 +1072,9 @@ export function getStorageHealth() {
         serverVersion: serverVersion,
         serverSupportsPartitions: serverSupportsPartitions,
         serverSupportsRecovery: serverSupportsRecovery,
+        serverSupportsPartitionTransactions: serverSupportsPartitionTransactions,
+        serverStorageState: serverStorageState,
+        serverRecoveryResult: serverRecoveryResult,
         serverHydrated: serverHydrated,
         serverInitFailed: serverInitFailed,
         error: lastInitializationError
@@ -1518,6 +1657,9 @@ export function initStorage(cb) {
     serverHydrated = false;
     serverInitFailed = false;
     lastInitializationError = null;
+    serverStorageState = null;
+    serverRecoveryResult = null;
+    serverSupportsPartitionTransactions = false;
     detectServer(function (result) {
         serverMode = !!result.installed;
 
@@ -1532,6 +1674,21 @@ export function initStorage(cb) {
         }
 
         if (serverMode && serverSupportsPartitions) {
+            if (serverStorageState && ['HEALTHY', 'NEW_INSTALL', 'META_MISSING', 'META_CORRUPT'].indexOf(serverStorageState) === -1) {
+                failServerInitialization('后端返回了未知的数据健康状态，已停止初始化。', { storageState: serverStorageState }, cb, 'STORAGE_STATE_INVALID');
+                return;
+            }
+            if (serverStorageState === 'META_MISSING' || serverStorageState === 'META_CORRUPT') {
+                failServerInitialization(
+                    serverStorageState === 'META_MISSING'
+                        ? '检测到衣柜分包存在但 meta 索引缺失，且没有可信来源可自动恢复。'
+                        : '后端 meta 索引损坏或与衣柜分包关系不合法。',
+                    { storageState: serverStorageState, recoveryResult: serverRecoveryResult },
+                    cb,
+                    serverStorageState
+                );
+                return;
+            }
             // v2 后端：只有完整 hydrate 成功才允许入口启动可写 UI
             initFromServerV2(function (err) { cb(err || null); });
             return;
@@ -1586,27 +1743,82 @@ function failServerInitialization(message, details, cb, code) {
 
 function validateMetaPayload(data) {
     if (!data || typeof data !== 'object' || Array.isArray(data)) return 'meta 不是 JSON 对象';
-    var arrayFields = ['presets', 'charIndex', 'charFavorites', 'tagOrder'];
+    if (data._version !== 2) return 'meta._version 必须严格等于 2';
+    var arrayFields = ['presets', 'charIndex', 'charFavorites'];
     for (var i = 0; i < arrayFields.length; i++) {
         var field = arrayFields[i];
-        if (data[field] !== undefined && !Array.isArray(data[field])) return 'meta.' + field + ' 类型无效';
+        if (!Object.prototype.hasOwnProperty.call(data, field) || !Array.isArray(data[field])) return 'meta.' + field + ' 缺失或类型无效';
     }
-    if (data.activePartitions !== undefined && (!data.activePartitions || typeof data.activePartitions !== 'object' || Array.isArray(data.activePartitions))) {
-        return 'meta.activePartitions 类型无效';
+    if (!data.activePartitions || typeof data.activePartitions !== 'object' || Array.isArray(data.activePartitions)) {
+        return 'meta.activePartitions 缺失或类型无效';
     }
-    if (data.charGroups !== undefined && (!data.charGroups || typeof data.charGroups !== 'object' || Array.isArray(data.charGroups))) {
-        return 'meta.charGroups 类型无效';
+    if (!data.charGroups || typeof data.charGroups !== 'object' || Array.isArray(data.charGroups)) {
+        return 'meta.charGroups 缺失或类型无效';
     }
-    var indexedFields = ['presets', 'charIndex'];
-    for (var j = 0; j < indexedFields.length; j++) {
-        var entries = data[indexedFields[j]] || [];
-        for (var n = 0; n < entries.length; n++) {
-            if (!entries[n] || !isListedPartitionKey(entries[n].partKey)) return 'meta.' + indexedFields[j] + ' 包含无效分包引用';
+    if (!Object.prototype.hasOwnProperty.call(data, 'activePresetId') || (data.activePresetId !== null && typeof data.activePresetId !== 'string')) return 'meta.activePresetId 类型无效';
+    if (data.currentView !== 'user' && data.currentView !== 'char') return 'meta.currentView 类型无效';
+    if (typeof data.currentChar !== 'string') return 'meta.currentChar 类型无效';
+    if (data.mode !== undefined && ['text', 'image', 'both'].indexOf(data.mode) === -1) return 'meta.mode 类型无效';
+    if (data.injectPosition !== undefined && ['user', 'system', 'context'].indexOf(data.injectPosition) === -1) return 'meta.injectPosition 类型无效';
+    var stringSettings = ['singleTemplate', 'multiTemplate', 'charSingleTemplate', 'charMultiTemplate', 'imagePrompt', 'multiImagePrompt', 'fabImage'];
+    for (var settingIndex = 0; settingIndex < stringSettings.length; settingIndex++) {
+        if (data[stringSettings[settingIndex]] !== undefined && typeof data[stringSettings[settingIndex]] !== 'string') return 'meta.' + stringSettings[settingIndex] + ' 类型无效';
+    }
+    if (data.debug !== undefined && typeof data.debug !== 'boolean') return 'meta.debug 类型无效';
+    if (data.showBall !== undefined && typeof data.showBall !== 'boolean') return 'meta.showBall 类型无效';
+    if (data.fabSize !== undefined && (typeof data.fabSize !== 'number' || !Number.isFinite(data.fabSize))) return 'meta.fabSize 类型无效';
+    if (data.tagOrder !== undefined && (!Array.isArray(data.tagOrder) || data.tagOrder.some(function (item) { return typeof item !== 'string'; }))) return 'meta.tagOrder 类型无效';
+    if (data.fabPos !== undefined && data.fabPos !== null && (!data.fabPos || typeof data.fabPos !== 'object' || Array.isArray(data.fabPos) ||
+        typeof data.fabPos.top !== 'number' || !Number.isFinite(data.fabPos.top) || typeof data.fabPos.left !== 'number' || !Number.isFinite(data.fabPos.left))) return 'meta.fabPos 类型无效';
+    if (data.apiVision !== undefined && (!data.apiVision || typeof data.apiVision !== 'object' || Array.isArray(data.apiVision))) return 'meta.apiVision 类型无效';
+    if (data.apiVision && typeof data.apiVision === 'object' && !Array.isArray(data.apiVision)) {
+        var visionStrings = ['endpoint', 'key', 'model', 'prompt', 'accPrompt'];
+        for (var visionIndex = 0; visionIndex < visionStrings.length; visionIndex++) {
+            if (data.apiVision[visionStrings[visionIndex]] !== undefined && typeof data.apiVision[visionStrings[visionIndex]] !== 'string') return 'meta.apiVision.' + visionStrings[visionIndex] + ' 类型无效';
         }
+        if (data.apiVision.promptTemplates !== undefined && !Array.isArray(data.apiVision.promptTemplates)) return 'meta.apiVision.promptTemplates 类型无效';
+        if (data.apiVision.activePromptTemplateId !== undefined && data.apiVision.activePromptTemplateId !== null && typeof data.apiVision.activePromptTemplateId !== 'string') return 'meta.apiVision.activePromptTemplateId 类型无效';
+        if (data.apiVision.overwrite !== undefined && typeof data.apiVision.overwrite !== 'boolean') return 'meta.apiVision.overwrite 类型无效';
+    }
+
+    var presetIds = {};
+    for (var j = 0; j < data.presets.length; j++) {
+        var preset = data.presets[j];
+        if (!preset || typeof preset.id !== 'string' || !preset.id || typeof preset.name !== 'string' || !preset.name ||
+            preset.partKey !== 'user:' + preset.id || !isListedPartitionKey(preset.partKey) || presetIds[preset.id]) {
+            return 'meta.presets 包含无效或重复索引';
+        }
+        presetIds[preset.id] = true;
+    }
+    if (typeof data.activePresetId === 'string' && !presetIds[data.activePresetId]) return 'meta.activePresetId 未引用现有预设';
+
+    var charIds = {};
+    var charNames = {};
+    var sharedCount = 0;
+    for (var n = 0; n < data.charIndex.length; n++) {
+        var item = data.charIndex[n];
+        if (!item || typeof item.id !== 'string' || typeof item.name !== 'string' || !item.name || !isListedPartitionKey(item.partKey)) return 'meta.charIndex 包含无效索引';
+        if (item.id === SHARED_CHAR_KEY) {
+            sharedCount++;
+            if (item.name !== SHARED_CHAR_KEY || item.partKey !== 'char:__shared__') return 'meta.charIndex 的通用衣柜索引无效';
+        } else if (!/^c_[A-Za-z0-9]{8}$/.test(item.id) || item.partKey !== 'char:' + item.id || item.name === SHARED_CHAR_KEY) {
+            return 'meta.charIndex 包含无效角色索引';
+        }
+        if (charIds[item.id] || charNames[item.name]) return 'meta.charIndex 包含重复索引';
+        charIds[item.id] = true;
+        charNames[item.name] = true;
+    }
+    if (sharedCount > 1) return 'meta.charIndex 包含重复通用衣柜索引';
+    if (data.currentChar && !charIds[data.currentChar]) return 'meta.currentChar 未引用现有角色';
+    if (data.currentView === 'char' && (!data.currentChar || !charIds[data.currentChar])) return '角色视角未引用现有角色';
+    for (var f = 0; f < data.charFavorites.length; f++) if (!charIds[data.charFavorites[f]] || data.charFavorites[f] === SHARED_CHAR_KEY) return 'meta.charFavorites 包含无效角色引用';
+    for (var groupName in data.charGroups) {
+        if (!Array.isArray(data.charGroups[groupName])) return 'meta.charGroups 包含无效分组';
+        for (var g = 0; g < data.charGroups[groupName].length; g++) if (!charIds[data.charGroups[groupName][g]] || data.charGroups[groupName][g] === SHARED_CHAR_KEY) return 'meta.charGroups 包含无效角色引用';
     }
     var active = data.activePartitions || {};
     for (var key in active) {
-        if (!isListedPartitionKey(key) || !Array.isArray(active[key])) return 'meta.activePartitions 包含无效分包引用';
+        if (!isListedPartitionKey(key) || !Array.isArray(active[key]) || active[key].some(function (id) { return typeof id !== 'string'; })) return 'meta.activePartitions 包含无效分包引用';
     }
     return null;
 }
@@ -1616,7 +1828,23 @@ function validatePartitionPayload(data, key) {
     var arrayFields = ['outfits', 'categories', 'activeIds', 'accessories', 'accCategories'];
     for (var i = 0; i < arrayFields.length; i++) {
         var field = arrayFields[i];
-        if (data[field] !== undefined && !Array.isArray(data[field])) return key + '.' + field + ' 类型无效';
+        if (!Object.prototype.hasOwnProperty.call(data, field) || !Array.isArray(data[field])) return key + '.' + field + ' 缺失或类型无效';
+    }
+    if (data.activeIds.some(function (id) { return typeof id !== 'string'; })) return key + '.activeIds 类型无效';
+    if (new Set(data.activeIds).size !== data.activeIds.length) return key + '.activeIds 包含重复 id';
+    for (var listIndex = 0; listIndex < 2; listIndex++) {
+        var listName = listIndex === 0 ? 'outfits' : 'accessories';
+        var ids = {};
+        for (var n = 0; n < data[listName].length; n++) {
+            var item = data[listName][n];
+            if (!item || typeof item.id !== 'string' || !item.id || ids[item.id]) return key + '.' + listName + ' 包含无效或重复 id';
+            ids[item.id] = true;
+        }
+    }
+    var outfitIds = {};
+    for (var outfitIndex = 0; outfitIndex < data.outfits.length; outfitIndex++) outfitIds[data.outfits[outfitIndex].id] = true;
+    for (var activeIndex = 0; activeIndex < data.activeIds.length; activeIndex++) {
+        if (!outfitIds[data.activeIds[activeIndex]]) return key + '.activeIds 引用了不存在的穿搭';
     }
     return null;
 }
@@ -1631,6 +1859,27 @@ function collectRequiredPartKeys(meta) {
     var active = meta.activePartitions || {};
     for (var key in active) add(key);
     return required;
+}
+
+function validateHydratedRelations(meta, parts) {
+    var expected = collectRequiredPartKeys(meta);
+    var active = meta.activePartitions || {};
+    var activeUserKey = meta.activePresetId ? 'user:' + meta.activePresetId : 'user:__default__';
+    for (var i = 0; i < expected.length; i++) {
+        var key = expected[i];
+        var part = parts[key];
+        if (!part) return 'meta 引用的衣柜分包缺失：' + key;
+        var ids = part.activeIds || [];
+        var tracked = Object.prototype.hasOwnProperty.call(active, key) ? active[key] : null;
+        var shouldTrack = key.indexOf('char:') === 0 || key === activeUserKey;
+        if (shouldTrack && ids.length > 0) {
+            if (!tracked || tracked.length !== ids.length) return 'meta.activePartitions 与分包不一致：' + key;
+            for (var n = 0; n < ids.length; n++) if (tracked[n] !== ids[n]) return 'meta.activePartitions 与分包不一致：' + key;
+        }
+        if ((!shouldTrack || ids.length === 0) && tracked && tracked.length > 0) return 'meta.activePartitions 包含不应激活的分包：' + key;
+    }
+    for (var activeKey in active) if (expected.indexOf(activeKey) === -1) return 'meta.activePartitions 引用了索引外分包：' + activeKey;
+    return null;
 }
 
 function isListedPartitionKey(key) {
@@ -1657,8 +1906,14 @@ function initFromServerV2(cb) {
             initLocal(function () {
                 serverHydrated = true;
                 serverInitFailed = false;
-                normalizeHydratedServerState();
-                uploadLocalToServerV2(function () {
+                suppressServerWrites = true;
+                try { normalizeHydratedServerState(); }
+                finally { suppressServerWrites = false; }
+                uploadLocalToServerV2(function (ok) {
+                    if (!ok) {
+                        failServerInitialization('初始化后端时有分包写入失败；本地数据仍保留，服务器写入已锁定。', null, cb, 'INITIAL_UPLOAD_FAILED');
+                        return;
+                    }
                     try { console.log('[outfit-manager] 已初始化空 v2 后端。'); } catch (e) {}
                     scheduleServerCheckpoint();
                     cb(null);
@@ -1740,6 +1995,12 @@ function initFromServerV2(cb) {
                     }
                     pending--;
                     if (pending === 0) {
+                        var relationError = validateHydratedRelations(hydratedMeta, hydratedParts);
+                        if (relationError) {
+                            failed = true;
+                            failServerInitialization('后端 meta 引用关系无效：' + relationError, { keys: keys }, cb, 'META_CORRUPT');
+                            return;
+                        }
                         // 所有读取完成前不触碰现有缓存；此处才原子切换 hydrate 结果。
                         metaCache = hydratedMeta;
                         partCache = hydratedParts;
@@ -1764,30 +2025,24 @@ function initFromServerV2(cb) {
 
 // 本地数据上传到 v2 后端（本地→server 迁移）
 function uploadLocalToServerV2(cb) {
-    var keys = ['meta'];
+    // 新后端走显式 meta+partitions 事务；旧 v2 后端保持兼容，并至少确保 meta 最后提交。
+    if (serverSupportsPartitionTransactions) serverPutPartitionDataset(cb);
+    else uploadLocalPartitionsSequentially(cb);
+}
+
+function uploadLocalPartitionsSequentially(cb) {
     var meta = metaCache || defMeta();
-
-    // 收集所有 partition key
-    if (keys.indexOf('user:__default__') === -1) keys.push('user:__default__');
-    var curUPK = currentUserPartKey();
-    if (keys.indexOf(curUPK) === -1) keys.push(curUPK);
-    (meta.presets || []).forEach(function (pi) {
-        if (keys.indexOf(pi.partKey) === -1) keys.push(pi.partKey);
-    });
-    (meta.charIndex || []).forEach(function (ci) {
-        if (keys.indexOf(ci.partKey) === -1) keys.push(ci.partKey);
-    });
-
-    var pending = keys.length;
-    if (pending === 0) { cb(); return; }
-    keys.forEach(function (key) {
-        var data = (key === 'meta') ? metaCache : partCache[key];
-        if (!data) { pending--; if (pending === 0) cb(); return; }
-        serverPutPartition(key, data, function () {
-            pending--;
-            if (pending === 0) cb();
-        });
-    });
+    var keys = collectRequiredPartKeys(meta).concat(['meta']);
+    var index = 0;
+    function next(ok) {
+        if (ok === false) { cb(false); return; }
+        if (index >= keys.length) { cb(true); return; }
+        var key = keys[index++];
+        var value = key === 'meta' ? metaCache : partCache[key];
+        if (!value) { cb(false); return; }
+        serverPutPartition(key, value, next);
+    }
+    next(true);
 }
 
 function initLocal(cb) {

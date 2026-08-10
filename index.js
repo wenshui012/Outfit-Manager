@@ -5,7 +5,8 @@
 // ══════════════════════════════════════════════════════════
 
 import { injectStyles } from './src/styles.js';
-import { initStorage } from './src/db.js';
+import { initStorage, getStorageHealth } from './src/db.js';
+import { toast } from './src/utils.js';
 import { setupInjection } from './src/inject.js';
 import { state, fn } from './src/bridge.js';
 import { registerMainFn, preResolveActiveImages } from './src/ui-main.js';
@@ -29,6 +30,7 @@ injectStyles();
 // 所有依赖数据的操作（注入拦截、悬浮球、按钮）放在回调里
 var normalUiStarted = false;
 var recoveryBtnTimer = null;
+var recoveryToastShown = false;
 
 function startNormalUi() {
     if (normalUiStarted) return;
@@ -54,6 +56,11 @@ function startNormalUi() {
 
 function handleStorageInitialization(err) {
     if (!err) {
+        var health = getStorageHealth();
+        if (!recoveryToastShown && health.serverRecoveryResult && health.serverRecoveryResult.recovered === true) {
+            recoveryToastShown = true;
+            toast('检测到衣柜索引异常，已根据可信的后端数据安全恢复。');
+        }
         startNormalUi();
         return;
     }
