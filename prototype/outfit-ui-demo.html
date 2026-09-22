@@ -102,10 +102,18 @@
       min-height: 64px;
     }
 
+    .target-cluster {
+      position: relative;
+      display: flex;
+      min-width: 0;
+      align-items: center;
+      gap: 10px;
+    }
+
     .avatar-switcher {
       display: flex;
       align-items: center;
-      width: 124px;
+      width: 104px;
       height: 56px;
       padding: 5px 11px;
       border: 1px solid var(--line);
@@ -150,12 +158,145 @@
       height: 100%;
     }
 
-    .avatar-target {
-      margin-left: 8px;
-      color: var(--ink-soft);
-      font-size: 11px;
+    .character-trigger {
+      display: none;
+      max-width: 94px;
+      min-width: 0;
+      min-height: 44px;
+      padding: 0 8px;
+      border: 0;
+      border-radius: 14px;
+      background: transparent;
+      color: #5f5856;
+      font-size: 14px;
       font-weight: 600;
-      letter-spacing: 0.08em;
+      cursor: pointer;
+      transition: background 160ms ease, color 160ms ease;
+    }
+
+    .character-trigger.is-visible {
+      display: inline-flex;
+      align-items: center;
+      gap: 5px;
+    }
+
+    .character-trigger:hover,
+    .character-trigger[aria-expanded="true"] {
+      background: rgba(255, 255, 255, 0.62);
+      color: var(--ink);
+    }
+
+    .character-chevron {
+      font-size: 12px;
+      transition: transform 180ms var(--ease-out);
+    }
+
+    .character-trigger[aria-expanded="true"] .character-chevron {
+      transform: rotate(180deg);
+    }
+
+    #characterName {
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    .character-menu {
+      position: absolute;
+      z-index: 48;
+      top: calc(100% + 8px);
+      left: 72px;
+      width: min(228px, calc(100vw - 112px));
+      padding: 8px;
+      visibility: hidden;
+      border: 1px solid var(--line);
+      border-radius: 20px;
+      background: rgba(252, 251, 249, 0.96);
+      box-shadow: var(--shadow-float);
+      opacity: 0;
+      transform: translateY(-7px) scale(0.98);
+      transform-origin: top left;
+      backdrop-filter: blur(18px) saturate(0.9);
+      transition: opacity 150ms ease, transform 200ms var(--ease-out), visibility 0s linear 220ms;
+    }
+
+    .character-menu.is-open {
+      visibility: visible;
+      opacity: 1;
+      transform: translateY(0) scale(1);
+      transition-delay: 0s;
+    }
+
+    .character-list {
+      display: grid;
+      gap: 4px;
+    }
+
+    .character-option,
+    .character-menu-action {
+      display: flex;
+      width: 100%;
+      min-height: 44px;
+      align-items: center;
+      justify-content: space-between;
+      padding: 0 12px;
+      border: 0;
+      border-radius: 13px;
+      background: transparent;
+      color: var(--ink-soft);
+      font-size: 13px;
+      text-align: left;
+      cursor: pointer;
+    }
+
+    .character-option:hover,
+    .character-menu-action:hover,
+    .character-option.is-active {
+      background: var(--accent-pale);
+      color: var(--ink);
+    }
+
+    .character-option.is-active::after {
+      content: "✓";
+      color: var(--accent);
+    }
+
+    .character-menu-divider {
+      height: 1px;
+      margin: 6px 4px;
+      background: var(--line);
+    }
+
+    .character-editor {
+      display: none;
+      grid-template-columns: minmax(0, 1fr) auto;
+      gap: 7px;
+      padding: 5px 4px 3px;
+    }
+
+    .character-editor.is-visible {
+      display: grid;
+    }
+
+    .character-editor input {
+      min-width: 0;
+      height: 42px;
+      padding: 0 11px;
+      border: 1px solid var(--line-strong);
+      border-radius: 12px;
+      outline: none;
+      background: white;
+      color: var(--ink);
+      font-size: 16px;
+    }
+
+    .character-editor button {
+      min-width: 46px;
+      border: 0;
+      border-radius: 12px;
+      background: #6f5b5f;
+      color: white;
+      cursor: pointer;
     }
 
     .top-actions {
@@ -297,8 +438,7 @@
       overscroll-behavior-inline: contain;
     }
 
-    .category-scroller::-webkit-scrollbar,
-    .outfit-thumbs::-webkit-scrollbar {
+    .category-scroller::-webkit-scrollbar {
       display: none;
     }
 
@@ -469,7 +609,7 @@
       box-shadow: 0 8px 24px rgba(53, 47, 44, 0.08);
     }
 
-    .card.is-selected {
+    .selection-mode .card.is-selected {
       border-color: rgba(91, 72, 76, 0.42);
       box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.72), 0 9px 28px rgba(73, 60, 62, 0.12);
     }
@@ -503,13 +643,12 @@
       transition: opacity 160ms ease, transform 180ms var(--ease-out);
     }
 
-    .selection-mode .card-check,
-    .card.is-selected .card-check {
+    .selection-mode .card-check {
       opacity: 1;
       transform: scale(1);
     }
 
-    .card.is-selected .card-check {
+    .selection-mode .card.is-selected .card-check {
       background: #6f5b5f;
       color: white;
     }
@@ -541,7 +680,8 @@
       bottom: max(12px, env(safe-area-inset-bottom, 12px));
       left: var(--gutter);
       display: flex;
-      align-items: center;
+      align-items: flex-end;
+      max-height: 108px;
       min-height: 106px;
       padding: 11px;
       visibility: hidden;
@@ -552,7 +692,7 @@
       opacity: 0;
       transform: translateY(18px) scale(0.98);
       backdrop-filter: blur(20px) saturate(0.92);
-      transition: opacity 180ms ease, transform 260ms var(--ease-out), visibility 0s linear 260ms;
+      transition: opacity 180ms ease, transform 260ms var(--ease-out), max-height 260ms var(--ease-out), visibility 0s linear 260ms;
     }
 
     .outfit-tray.is-visible {
@@ -562,12 +702,61 @@
       transition-delay: 0s;
     }
 
-    .outfit-thumbs {
-      display: flex;
+    .outfit-tray.is-expanded {
+      max-height: min(232px, 38dvh);
+    }
+
+    .outfit-canvas {
       min-width: 0;
+      max-height: min(202px, calc(38dvh - 22px));
       flex: 1;
+      overflow-y: auto;
+      scrollbar-width: none;
+      overscroll-behavior-y: contain;
+    }
+
+    .outfit-canvas::-webkit-scrollbar,
+    .outfit-role-items::-webkit-scrollbar {
+      display: none;
+    }
+
+    .outfit-canvas.is-compact {
+      display: flex;
       gap: 8px;
       overflow-x: auto;
+      overflow-y: hidden;
+      scroll-snap-type: x proximity;
+      overscroll-behavior-inline: contain;
+    }
+
+    .outfit-role-row {
+      display: grid;
+      grid-template-columns: 48px minmax(0, 1fr);
+      gap: 8px;
+      align-items: center;
+    }
+
+    .outfit-role-row + .outfit-role-row {
+      margin-top: 8px;
+    }
+
+    .outfit-role-label {
+      overflow: hidden;
+      color: #756d6a;
+      font-size: 11px;
+      font-weight: 600;
+      line-height: 1.35;
+      text-align: center;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    .outfit-role-items {
+      display: flex;
+      min-width: 0;
+      gap: 7px;
+      overflow-x: auto;
+      overflow-y: hidden;
       scroll-snap-type: x proximity;
       scrollbar-width: none;
       overscroll-behavior-inline: contain;
@@ -614,6 +803,29 @@
       transition: opacity 140ms ease;
     }
 
+    .outfit-role-badge {
+      position: absolute;
+      right: 5px;
+      bottom: 5px;
+      left: 5px;
+      overflow: hidden;
+      padding: 3px 5px;
+      border-radius: 7px;
+      background: rgba(255, 255, 255, 0.8);
+      color: #625a58;
+      font-size: 9px;
+      font-weight: 600;
+      line-height: 1.2;
+      text-align: center;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+      backdrop-filter: blur(6px);
+    }
+
+    .outfit-role-row .outfit-role-badge {
+      display: none;
+    }
+
     .outfit-thumb:hover::after,
     .outfit-thumb:focus-visible::after {
       opacity: 1;
@@ -629,6 +841,7 @@
     }
 
     .tray-action {
+      display: none;
       width: 46px;
       min-width: 46px;
       height: 46px;
@@ -639,6 +852,7 @@
     }
 
     .tray-action.is-active {
+      display: grid;
       background: #6f5b5f;
       color: white;
     }
@@ -648,6 +862,34 @@
       z-index: 45;
       inset: 0;
       pointer-events: none;
+    }
+
+    .orbit-lines {
+      position: absolute;
+      z-index: 1;
+      inset: 0;
+      width: 100%;
+      height: 100%;
+      visibility: hidden;
+      overflow: visible;
+      opacity: 0;
+      pointer-events: none;
+      transition: opacity 190ms ease, visibility 0s linear 220ms;
+    }
+
+    .orbit-lines.is-visible {
+      visibility: visible;
+      opacity: 1;
+      transition-delay: 20ms, 0s;
+    }
+
+    .orbit-lines ellipse {
+      fill: none;
+      stroke: rgba(112, 92, 96, 0.13);
+      stroke-width: 1;
+      stroke-dasharray: 62 42 24 70;
+      stroke-linecap: round;
+      vector-effect: non-scaling-stroke;
     }
 
     .fab,
@@ -698,8 +940,8 @@
 
     .radial-action {
       z-index: 2;
-      width: 54px;
-      height: 54px;
+      width: var(--planet-size, 54px);
+      height: var(--planet-size, 54px);
       visibility: hidden;
       border: 1px solid rgba(88, 72, 76, 0.13);
       background: rgba(248, 243, 241, 0.9);
@@ -729,8 +971,8 @@
     }
 
     .radial-action .icon {
-      width: 20px;
-      height: 20px;
+      width: var(--planet-icon, 20px);
+      height: var(--planet-icon, 20px);
       transform: translateY(-5px);
     }
 
@@ -930,34 +1172,49 @@
     <section class="wardrobe-app" id="app" aria-label="Outfit Manager DOM 原型">
       <header class="app-header" id="appHeader">
         <div class="top-row">
-          <div class="avatar-switcher" role="group" aria-label="切换穿搭目标">
-            <button class="avatar-button is-active" type="button" data-target="user" aria-label="切换到 User" aria-pressed="true">
-              <svg viewBox="0 0 48 48" role="img" aria-label="User 头像">
-                <defs><linearGradient id="userBg" x1="0" y1="0" x2="1" y2="1"><stop stop-color="#eadfdb"/><stop offset="1" stop-color="#c9b8b4"/></linearGradient></defs>
-                <rect width="48" height="48" fill="url(#userBg)"/>
-                <circle cx="24" cy="19" r="9" fill="#f5ede7"/>
-                <path d="M8 48c1-12 7-18 16-18s15 6 16 18" fill="#6d6061"/>
-                <path d="M14 18c1-9 5-13 11-13 7 0 11 5 11 14-5-2-8-6-10-10-2 5-6 8-12 9Z" fill="#4d4546"/>
-              </svg>
+          <div class="target-cluster">
+            <div class="avatar-switcher" role="group" aria-label="切换穿搭目标">
+              <button class="avatar-button is-active" type="button" data-target="user" aria-label="切换到 User" aria-pressed="true">
+                <svg viewBox="0 0 48 48" role="img" aria-label="User 头像">
+                  <defs><linearGradient id="userBg" x1="0" y1="0" x2="1" y2="1"><stop stop-color="#eadfdb"/><stop offset="1" stop-color="#c9b8b4"/></linearGradient></defs>
+                  <rect width="48" height="48" fill="url(#userBg)"/>
+                  <circle cx="24" cy="19" r="9" fill="#f5ede7"/>
+                  <path d="M8 48c1-12 7-18 16-18s15 6 16 18" fill="#6d6061"/>
+                  <path d="M14 18c1-9 5-13 11-13 7 0 11 5 11 14-5-2-8-6-10-10-2 5-6 8-12 9Z" fill="#4d4546"/>
+                </svg>
+              </button>
+              <button class="avatar-button" type="button" data-target="char" aria-label="切换到 Char" aria-pressed="false">
+                <svg viewBox="0 0 48 48" role="img" aria-label="Char 头像">
+                  <defs><linearGradient id="charBg" x1="0" y1="0" x2="1" y2="1"><stop stop-color="#dde7e5"/><stop offset="1" stop-color="#aebfbd"/></linearGradient></defs>
+                  <rect width="48" height="48" fill="url(#charBg)"/>
+                  <circle cx="24" cy="19" r="9" fill="#f5eee8"/>
+                  <path d="M7 48c2-12 8-18 17-18s15 6 17 18" fill="#516361"/>
+                  <path d="M13 20c0-10 4-15 12-15 6 0 10 5 10 14-4-2-7-6-8-10-3 5-7 9-14 11Z" fill="#775f58"/>
+                </svg>
+              </button>
+            </div>
+            <button class="character-trigger" id="characterTrigger" type="button" aria-label="选择或管理角色" aria-expanded="false" aria-controls="characterMenu">
+              <span id="characterName">萧绍</span><span class="character-chevron" aria-hidden="true">⌄</span>
             </button>
-            <button class="avatar-button" type="button" data-target="char" aria-label="切换到 Char" aria-pressed="false">
-              <svg viewBox="0 0 48 48" role="img" aria-label="Char 头像">
-                <defs><linearGradient id="charBg" x1="0" y1="0" x2="1" y2="1"><stop stop-color="#dde7e5"/><stop offset="1" stop-color="#aebfbd"/></linearGradient></defs>
-                <rect width="48" height="48" fill="url(#charBg)"/>
-                <circle cx="24" cy="19" r="9" fill="#f5eee8"/>
-                <path d="M7 48c2-12 8-18 17-18s15 6 17 18" fill="#516361"/>
-                <path d="M13 20c0-10 4-15 12-15 6 0 10 5 10 14-4-2-7-6-8-10-3 5-7 9-14 11Z" fill="#775f58"/>
-              </svg>
-            </button>
-            <span class="avatar-target" id="avatarTarget">USER</span>
+            <div class="character-menu" id="characterMenu">
+              <div class="character-list" id="characterList"></div>
+              <div class="character-menu-divider"></div>
+              <button class="character-menu-action" id="addCharacter" type="button"><span>新增角色</span><span aria-hidden="true">＋</span></button>
+              <button class="character-menu-action" id="renameCharacter" type="button"><span>重命名当前角色</span><span aria-hidden="true">⌁</span></button>
+              <form class="character-editor" id="characterEditor">
+                <label class="sr-only" for="characterInput">角色名称</label>
+                <input id="characterInput" type="text" maxlength="12" autocomplete="off">
+                <button type="submit">保存</button>
+              </form>
+            </div>
           </div>
 
           <div class="top-actions">
             <button class="icon-button" id="searchToggle" type="button" aria-label="打开搜索" aria-expanded="false" aria-controls="searchPanel">
               <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><circle cx="10.8" cy="10.8" r="6.8"/><path d="m16 16 4.2 4.2"/></svg>
             </button>
-            <button class="icon-button" id="selectToggle" type="button" aria-label="开启选择模式" aria-pressed="false">
-              <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M8 3H5a2 2 0 0 0-2 2v3M16 3h3a2 2 0 0 1 2 2v3M8 21H5a2 2 0 0 1-2-2v-3M16 21h3a2 2 0 0 0 2-2v-3" stroke-dasharray="3 2"/></svg>
+            <button class="icon-button" id="settingsToggle" type="button" aria-label="打开设置占位">
+              <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.9l.1.1-2.8 2.8-.1-.1a1.7 1.7 0 0 0-1.9-.3 1.7 1.7 0 0 0-1 1.6v.2h-4V21a1.7 1.7 0 0 0-1-1.6 1.7 1.7 0 0 0-1.9.3l-.1.1L4.2 17l.1-.1a1.7 1.7 0 0 0 .3-1.9A1.7 1.7 0 0 0 3 14H2.8v-4H3a1.7 1.7 0 0 0 1.6-1 1.7 1.7 0 0 0-.3-1.9L4.2 7 7 4.2l.1.1A1.7 1.7 0 0 0 9 4.6 1.7 1.7 0 0 0 10 3v-.2h4V3a1.7 1.7 0 0 0 1 1.6 1.7 1.7 0 0 0 1.9-.3l.1-.1L19.8 7l-.1.1a1.7 1.7 0 0 0-.3 1.9 1.7 1.7 0 0 0 1.6 1h.2v4H21a1.7 1.7 0 0 0-1.6 1Z"/></svg>
             </button>
           </div>
         </div>
@@ -1000,17 +1257,26 @@
       </main>
 
       <div class="fab-layer" id="fabLayer" aria-label="快捷操作">
-        <button class="radial-action" id="modeAction" type="button" aria-label="切换到单品模式" style="--delay: 0ms">
+        <svg class="orbit-lines" id="orbitLines" aria-hidden="true"><ellipse id="orbitOuter"/><ellipse id="orbitInner"/></svg>
+        <button class="radial-action" id="modeAction" type="button" aria-label="切换到单品模式" style="--delay: 0ms; --planet-size: 56px; --planet-icon: 21px">
           <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M8.2 5.1 12 3l3.8 2.1 3.7 1.2-1.6 4.1-2.4-.9V21h-7V9.5l-2.4.9-1.6-4.1 3.7-1.2Z"/></svg>
           <span class="radial-label" id="modeActionLabel">单品</span>
         </button>
-        <button class="radial-action" id="pairAction" type="button" aria-label="进入搭配模式" style="--delay: 35ms">
+        <button class="radial-action" id="pairAction" type="button" aria-label="进入搭配模式" style="--delay: 30ms; --planet-size: 54px; --planet-icon: 20px">
           <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M8.5 4.5a3.5 3.5 0 1 0 0 7h7a3.5 3.5 0 1 0 0-7h-7ZM8.5 12.5a3.5 3.5 0 1 0 0 7h7a3.5 3.5 0 1 0 0-7h-7Z"/></svg>
           <span class="radial-label">搭配</span>
         </button>
-        <button class="radial-action" id="importAction" type="button" aria-label="打开导入演示" style="--delay: 70ms">
+        <button class="radial-action" id="importAction" type="button" aria-label="打开导入演示" style="--delay: 60ms; --planet-size: 50px; --planet-icon: 18px">
           <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3v12m0 0 4-4m-4 4-4-4M5 19h14"/></svg>
           <span class="radial-label">导入</span>
+        </button>
+        <button class="radial-action" id="filterAction" type="button" aria-label="筛选当前衣库" style="--delay: 90ms; --planet-size: 46px; --planet-icon: 17px">
+          <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 6h16M7 12h10M10 18h4"/></svg>
+          <span class="radial-label">筛选</span>
+        </button>
+        <button class="radial-action" id="multiAction" type="button" aria-label="开启多选" aria-pressed="false" style="--delay: 120ms; --planet-size: 46px; --planet-icon: 17px">
+          <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M8 3H5a2 2 0 0 0-2 2v3M16 3h3a2 2 0 0 1 2 2v3M8 21H5a2 2 0 0 1-2-2v-3M16 21h3a2 2 0 0 0 2-2v-3" stroke-dasharray="3 2"/></svg>
+          <span class="radial-label">多选</span>
         </button>
         <button class="fab" id="fab" type="button" aria-label="展开快捷操作，可拖动" aria-expanded="false">
           <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg>
@@ -1018,7 +1284,7 @@
       </div>
 
       <aside class="outfit-tray" id="outfitTray" aria-label="当前穿搭">
-        <div class="outfit-thumbs" id="outfitThumbs"></div>
+        <div class="outfit-canvas" id="outfitThumbs"></div>
         <button class="tray-action" id="pairDone" type="button" aria-label="完成搭配">
           <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="m5 12.5 4.5 4.5L19 7.5"/></svg>
         </button>
@@ -1068,11 +1334,22 @@
 
       const state = {
         target: 'user',
+        activeCharacterId: 'char-1',
+        characters: [
+          { id: 'char-1', name: '萧绍' },
+          { id: 'char-2', name: '谢玄' }
+        ],
+        outfits: {
+          user: [1],
+          'char-1': [4],
+          'char-2': []
+        },
         category: '全部',
         mode: 'wardrobe',
         pairing: false,
-        selectionMode: false,
-        selected: new Set([1, 4]),
+        multiSelect: false,
+        batchSelected: new Set(),
+        characterEditorMode: null,
         query: '',
         menuOpen: false,
         toastTimer: 0,
@@ -1096,6 +1373,11 @@
         modeActionLabel: document.querySelector('#modeActionLabel'),
         pairAction: document.querySelector('#pairAction'),
         importAction: document.querySelector('#importAction'),
+        filterAction: document.querySelector('#filterAction'),
+        multiAction: document.querySelector('#multiAction'),
+        orbitLines: document.querySelector('#orbitLines'),
+        orbitOuter: document.querySelector('#orbitOuter'),
+        orbitInner: document.querySelector('#orbitInner'),
         fab: document.querySelector('#fab'),
         fabLayer: document.querySelector('#fabLayer'),
         outfitTray: document.querySelector('#outfitTray'),
@@ -1105,8 +1387,15 @@
         searchPanel: document.querySelector('#searchPanel'),
         searchInput: document.querySelector('#searchInput'),
         clearSearch: document.querySelector('#clearSearch'),
-        selectToggle: document.querySelector('#selectToggle'),
-        avatarTarget: document.querySelector('#avatarTarget'),
+        settingsToggle: document.querySelector('#settingsToggle'),
+        characterTrigger: document.querySelector('#characterTrigger'),
+        characterName: document.querySelector('#characterName'),
+        characterMenu: document.querySelector('#characterMenu'),
+        characterList: document.querySelector('#characterList'),
+        addCharacter: document.querySelector('#addCharacter'),
+        renameCharacter: document.querySelector('#renameCharacter'),
+        characterEditor: document.querySelector('#characterEditor'),
+        characterInput: document.querySelector('#characterInput'),
         backdrop: document.querySelector('#backdrop'),
         importSheet: document.querySelector('#importSheet'),
         cancelImport: document.querySelector('#cancelImport'),
@@ -1168,12 +1457,37 @@
         });
       }
 
+      function currentOutfitKey() {
+        return state.target === 'user' ? 'user' : state.activeCharacterId;
+      }
+
+      function activeCharacter() {
+        return state.characters.find(character => character.id === state.activeCharacterId) || state.characters[0];
+      }
+
+      function outfitSetFor(key = currentOutfitKey()) {
+        return new Set(state.outfits[key] || []);
+      }
+
+      function renderCharacterControls() {
+        const character = activeCharacter();
+        const showCharacter = state.target === 'char';
+        el.characterName.textContent = character.name;
+        el.characterTrigger.classList.toggle('is-visible', showCharacter);
+        el.characterTrigger.setAttribute('aria-label', `当前角色 ${character.name}，点击切换或管理角色`);
+        if (!showCharacter) setCharacterMenu(false);
+        el.characterList.innerHTML = state.characters.map(entry => `<button class="character-option${entry.id === state.activeCharacterId ? ' is-active' : ''}" type="button" data-character-id="${entry.id}">${entry.name}</button>`).join('');
+      }
+
       function renderGrid() {
         const visibleIds = new Set(visibleItems().map(item => item.id));
+        const selectionActive = state.pairing || state.multiSelect;
+        const selectedIds = state.multiSelect ? state.batchSelected : outfitSetFor();
         const cards = items.map(item => {
-          const selected = state.selected.has(item.id);
+          const selected = selectionActive && selectedIds.has(item.id);
           const filtered = !visibleIds.has(item.id);
-          return `<button class="card${selected ? ' is-selected' : ''}${filtered ? ' is-filtered' : ''}" type="button" data-item-id="${item.id}" aria-label="${item.name}，${selected ? '已加入当前穿搭' : '未选择'}" aria-pressed="${selected}" style="--card-bg:${item.bg}">
+          const stateCopy = !selectionActive ? '打开预览' : selected ? '已选择' : '未选择';
+          return `<button class="card${selected ? ' is-selected' : ''}${filtered ? ' is-filtered' : ''}" type="button" data-item-id="${item.id}" aria-label="${item.name}，${stateCopy}" aria-pressed="${selectionActive ? selected : 'false'}" style="--card-bg:${item.bg}">
             <span class="card-visual">${garmentSvg(item)}</span>
             <span class="card-check" aria-hidden="true">${icons.check}</span>
           </button>`;
@@ -1188,20 +1502,48 @@
         renderGrid();
       }
 
+      function renderOutfitThumb(item, roleName, roleKey) {
+        return `<button class="outfit-thumb" type="button" data-remove-id="${item.id}" data-role-key="${roleKey}" aria-label="从 ${roleName} 的穿搭移除${item.name}">${garmentSvg(item)}<span class="outfit-role-badge">${roleName}</span></button>`;
+      }
+
       function renderTray() {
-        const selectedItems = items.filter(item => state.selected.has(item.id));
-        const slots = state.pairing ? Math.max(0, 4 - selectedItems.length) : 0;
-        el.outfitThumbs.innerHTML = selectedItems.map(item => `<button class="outfit-thumb" type="button" data-remove-id="${item.id}" aria-label="从当前穿搭移除${item.name}">${garmentSvg(item)}</button>`).join('') +
-          Array.from({ length: slots }, (_, index) => `<span class="outfit-slot" aria-label="空搭配位 ${index + 1}">+</span>`).join('');
-        el.outfitTray.classList.toggle('is-visible', selectedItems.length > 0 || state.pairing);
+        const roleEntries = [
+          { key: 'user', name: 'User' },
+          ...state.characters.map(character => ({ key: character.id, name: character.name }))
+        ].map(role => ({ ...role, itemIds: state.outfits[role.key] || [] }))
+          .filter(role => role.itemIds.length || (state.pairing && role.key === currentOutfitKey()));
+        const totalItems = roleEntries.reduce((total, role) => total + role.itemIds.length, 0);
+        const expanded = roleEntries.length > 2 || totalItems > 4 || roleEntries.some(role => role.itemIds.length > 2);
+        el.outfitThumbs.classList.toggle('is-compact', !expanded);
+        el.outfitTray.classList.toggle('is-expanded', expanded);
+        el.outfitTray.classList.toggle('is-pairing', state.pairing);
+
+        if (!expanded) {
+          el.outfitThumbs.innerHTML = roleEntries.flatMap(role => role.itemIds.map(id => {
+            const item = items.find(entry => entry.id === id);
+            return item ? renderOutfitThumb(item, role.name, role.key) : '';
+          })).join('') + (state.pairing && totalItems < 4 ? Array.from({ length: 4 - totalItems }, (_, index) => `<span class="outfit-slot" aria-label="空搭配位 ${index + 1}">+</span>`).join('') : '');
+        } else {
+          el.outfitThumbs.innerHTML = roleEntries.map(role => {
+            const rowItems = role.itemIds.map(id => {
+              const item = items.find(entry => entry.id === id);
+              return item ? renderOutfitThumb(item, role.name, role.key) : '';
+            }).join('');
+            const slots = state.pairing && role.key === currentOutfitKey() ? Array.from({ length: Math.max(0, 4 - role.itemIds.length) }, (_, index) => `<span class="outfit-slot" aria-label="${role.name} 的空搭配位 ${index + 1}">+</span>`).join('') : '';
+            return `<section class="outfit-role-row" aria-label="${role.name} 的当前穿搭"><span class="outfit-role-label">${role.name}</span><div class="outfit-role-items">${rowItems}${slots}</div></section>`;
+          }).join('');
+        }
+
+        el.outfitTray.classList.toggle('is-visible', totalItems > 0 || state.pairing);
         el.pairDone.classList.toggle('is-active', state.pairing);
-        el.pairDone.setAttribute('aria-label', state.pairing ? '完成搭配' : '进入搭配模式');
+        el.pairDone.setAttribute('aria-label', '完成搭配');
         requestAnimationFrame(initializeFab);
       }
 
       function renderMode() {
-        const baseLabel = state.mode === 'wardrobe' ? '衣柜浏览' : '单品挑选';
-        el.modeLabel.textContent = state.pairing ? `${baseLabel} · 搭配中` : baseLabel;
+        const baseLabel = state.mode === 'wardrobe' ? '衣柜浏览' : '单品衣库';
+        const suffix = state.pairing ? ' · 搭配中' : state.multiSelect ? ` · 已选 ${state.batchSelected.size} 件` : '';
+        el.modeLabel.textContent = `${baseLabel}${suffix}`;
         el.modeActionLabel.textContent = state.mode === 'wardrobe' ? '单品' : '衣柜';
         el.modeAction.setAttribute('aria-label', `切换到${state.mode === 'wardrobe' ? '单品' : '衣柜'}模式`);
         el.pairAction.setAttribute('aria-label', state.pairing ? '退出搭配模式' : '进入搭配模式');
@@ -1209,9 +1551,11 @@
       }
 
       function renderSelectionMode() {
-        el.app.classList.toggle('selection-mode', state.selectionMode);
-        el.selectToggle.setAttribute('aria-pressed', String(state.selectionMode));
-        el.selectToggle.setAttribute('aria-label', state.selectionMode ? '关闭选择模式' : '开启选择模式');
+        const active = state.pairing || state.multiSelect;
+        el.app.classList.toggle('selection-mode', active);
+        el.multiAction.setAttribute('aria-pressed', String(state.multiSelect));
+        el.multiAction.setAttribute('aria-label', state.multiSelect ? '退出多选' : '开启多选');
+        el.multiAction.querySelector('.radial-label').textContent = state.multiSelect ? '退出' : '多选';
       }
 
       function setCategory(category) {
@@ -1239,32 +1583,109 @@
       function toggleItem(id) {
         const item = items.find(entry => entry.id === id);
         if (!item) return;
-        if (state.selected.has(id)) {
-          state.selected.delete(id);
-          showToast(`已移除 ${item.name}`);
+        if (state.pairing) {
+          const key = currentOutfitKey();
+          const selected = new Set(state.outfits[key] || []);
+          if (selected.has(id)) {
+            selected.delete(id);
+            showToast(`已从当前搭配移除 ${item.name}`);
+          } else {
+            selected.add(id);
+            showToast(`已为当前角色加入 ${item.name}`);
+          }
+          state.outfits[key] = [...selected];
+        } else if (state.multiSelect) {
+          if (state.batchSelected.has(id)) state.batchSelected.delete(id);
+          else state.batchSelected.add(id);
+          showToast(`批量管理已选 ${state.batchSelected.size} 件`);
         } else {
-          state.selected.add(id);
-          showToast(`已加入 ${item.name}`);
+          showToast(`${item.name} · 详情占位`);
         }
         refreshGrid();
+        renderMode();
         renderTray();
+      }
+
+      function removeOutfitItem(roleKey, id) {
+        state.outfits[roleKey] = (state.outfits[roleKey] || []).filter(itemId => itemId !== id);
+        refreshGrid();
+        renderTray();
+        showToast('已从穿搭中移除');
       }
 
       function setPairing(active) {
         state.pairing = active;
-        if (active) state.selectionMode = true;
+        if (active) {
+          state.multiSelect = false;
+          state.batchSelected.clear();
+        }
         renderMode();
         renderSelectionMode();
+        refreshGrid();
         renderTray();
         setFabMenu(false);
-        showToast(active ? '进入搭配模式' : '搭配已收起');
+        showToast(active ? '进入搭配模式' : '搭配已完成');
+      }
+
+      function setMultiSelect(active) {
+        state.multiSelect = active;
+        if (active) state.pairing = false;
+        if (!active) state.batchSelected.clear();
+        renderMode();
+        renderSelectionMode();
+        refreshGrid();
+        renderTray();
+        setFabMenu(false);
+        showToast(active ? '进入批量管理' : '已退出批量管理');
+      }
+
+      function setCharacterMenu(open) {
+        const allowed = open && state.target === 'char';
+        el.characterMenu.classList.toggle('is-open', allowed);
+        el.characterTrigger.setAttribute('aria-expanded', String(allowed));
+        if (!allowed) {
+          el.characterEditor.classList.remove('is-visible');
+          state.characterEditorMode = null;
+        }
+      }
+
+      function beginCharacterEdit(mode) {
+        state.characterEditorMode = mode;
+        el.characterEditor.classList.add('is-visible');
+        el.characterInput.value = mode === 'rename' ? activeCharacter().name : '';
+        el.characterInput.placeholder = mode === 'rename' ? '输入新的角色名' : '输入角色名';
+        setTimeout(() => el.characterInput.focus(), 0);
+      }
+
+      function saveCharacterEdit() {
+        const name = el.characterInput.value.trim();
+        if (!name) {
+          showToast('请输入角色名');
+          return;
+        }
+        if (state.characterEditorMode === 'rename') {
+          activeCharacter().name = name;
+          showToast(`当前角色已重命名为 ${name}`);
+        } else {
+          const id = `char-${Date.now()}`;
+          state.characters.push({ id, name });
+          state.outfits[id] = [];
+          state.activeCharacterId = id;
+          showToast(`已新增角色 ${name}`);
+        }
+        state.characterEditorMode = null;
+        el.characterEditor.classList.remove('is-visible');
+        renderCharacterControls();
+        renderTray();
+        refreshGrid();
       }
 
       function setFabMenu(open) {
         state.menuOpen = open;
         el.fab.setAttribute('aria-expanded', String(open));
         el.fab.setAttribute('aria-label', open ? '收起快捷操作，可拖动' : '展开快捷操作，可拖动');
-        [el.modeAction, el.pairAction, el.importAction].forEach(action => action.classList.toggle('is-visible', open));
+        [el.modeAction, el.pairAction, el.importAction, el.filterAction, el.multiAction].forEach(action => action.classList.toggle('is-visible', open));
+        el.orbitLines.classList.toggle('is-visible', open);
         positionRadialActions(open);
       }
 
@@ -1308,32 +1729,41 @@
         const fabCenter = { x: state.fab.x + bounds.fabSize / 2, y: state.fab.y + bounds.fabSize / 2 };
         const horizontal = fabCenter.x > bounds.width / 2 ? -1 : 1;
         const vertical = fabCenter.y > bounds.height / 2 ? -1 : 1;
-        const directions = [
-          { x: 0, y: vertical },
-          { x: horizontal * 0.72, y: vertical * 0.72 },
-          { x: horizontal, y: 0 }
+        const planets = [
+          { node: el.modeAction, size: 56, x: horizontal * 0.34, y: vertical * 1.02 },
+          { node: el.pairAction, size: 54, x: horizontal * 0.94, y: vertical * 0.64 },
+          { node: el.importAction, size: 50, x: horizontal * 1.42, y: vertical * 0.18 },
+          { node: el.filterAction, size: 46, x: horizontal * 0.9, y: vertical * 1.34 },
+          { node: el.multiAction, size: 46, x: horizontal * 1.48, y: vertical * 1.02 }
         ];
-        const actions = [el.modeAction, el.pairAction, el.importAction];
-        let radius = 92;
-        const actionSize = 54;
+        let radius = 96;
         const safe = 10;
 
-        while (radius > 68) {
-          const fits = directions.every(direction => {
-            const left = fabCenter.x - actionSize / 2 + direction.x * radius;
-            const top = fabCenter.y - actionSize / 2 + direction.y * radius;
-            return left >= safe && left + actionSize <= bounds.width - safe && top >= bounds.minY - 6 && top + actionSize <= bounds.height - safe;
+        while (radius > 62) {
+          const fits = planets.every(planet => {
+            const left = fabCenter.x - planet.size / 2 + planet.x * radius;
+            const top = fabCenter.y - planet.size / 2 + planet.y * radius;
+            return left >= safe && left + planet.size <= bounds.width - safe && top >= bounds.minY - 6 && top + planet.size <= bounds.height - safe;
           });
           if (fits) break;
-          radius -= 4;
+          radius -= 3;
         }
 
-        actions.forEach((action, index) => {
-          const direction = directions[index];
-          const left = open ? fabCenter.x - actionSize / 2 + direction.x * radius : fabCenter.x - actionSize / 2;
-          const top = open ? fabCenter.y - actionSize / 2 + direction.y * radius : fabCenter.y - actionSize / 2;
-          action.style.left = `${Math.min(bounds.width - actionSize - safe, Math.max(safe, left))}px`;
-          action.style.top = `${Math.min(bounds.height - actionSize - safe, Math.max(bounds.minY - 6, top))}px`;
+        planets.forEach(planet => {
+          const left = open ? fabCenter.x - planet.size / 2 + planet.x * radius : fabCenter.x - planet.size / 2;
+          const top = open ? fabCenter.y - planet.size / 2 + planet.y * radius : fabCenter.y - planet.size / 2;
+          planet.node.style.left = `${Math.min(bounds.width - planet.size - safe, Math.max(safe, left))}px`;
+          planet.node.style.top = `${Math.min(bounds.height - planet.size - safe, Math.max(bounds.minY - 6, top))}px`;
+        });
+
+        el.orbitLines.setAttribute('viewBox', `0 0 ${bounds.width} ${bounds.height}`);
+        const rotation = horizontal * vertical * 27;
+        [[el.orbitOuter, 1.62, 1.08, rotation], [el.orbitInner, 1.1, 0.72, -rotation * 0.72]].forEach(([orbit, scaleX, scaleY, tilt]) => {
+          orbit.setAttribute('cx', fabCenter.x);
+          orbit.setAttribute('cy', fabCenter.y);
+          orbit.setAttribute('rx', radius * scaleX);
+          orbit.setAttribute('ry', radius * scaleY);
+          orbit.setAttribute('transform', `rotate(${tilt} ${fabCenter.x} ${fabCenter.y})`);
         });
       }
 
@@ -1428,9 +1858,29 @@
             candidate.classList.toggle('is-active', active);
             candidate.setAttribute('aria-pressed', String(active));
           });
-          el.avatarTarget.textContent = state.target.toUpperCase();
-          showToast(`已切换到 ${state.target === 'user' ? 'User' : 'Char'}`);
+          renderCharacterControls();
+          refreshGrid();
+          renderTray();
+          showToast(`已切换到 ${state.target === 'user' ? 'User' : activeCharacter().name}`);
         });
+      });
+
+      el.characterTrigger.addEventListener('click', () => setCharacterMenu(!el.characterMenu.classList.contains('is-open')));
+      el.characterList.addEventListener('click', event => {
+        const button = event.target.closest('[data-character-id]');
+        if (!button) return;
+        state.activeCharacterId = button.dataset.characterId;
+        renderCharacterControls();
+        refreshGrid();
+        renderTray();
+        setCharacterMenu(false);
+        showToast(`当前角色：${activeCharacter().name}`);
+      });
+      el.addCharacter.addEventListener('click', () => beginCharacterEdit('add'));
+      el.renameCharacter.addEventListener('click', () => beginCharacterEdit('rename'));
+      el.characterEditor.addEventListener('submit', event => {
+        event.preventDefault();
+        saveCharacterEdit();
       });
 
       el.categoryScroller.addEventListener('click', event => {
@@ -1455,12 +1905,7 @@
         state.query = el.searchInput.value;
         refreshGrid();
       });
-
-      el.selectToggle.addEventListener('click', () => {
-        state.selectionMode = !state.selectionMode;
-        renderSelectionMode();
-        showToast(state.selectionMode ? '选择模式已开启' : '选择模式已关闭');
-      });
+      el.settingsToggle.addEventListener('click', () => showToast('设置入口 · DOM 占位'));
 
       el.wardrobeGrid.addEventListener('click', event => {
         const card = event.target.closest('[data-item-id]');
@@ -1469,20 +1914,24 @@
 
       el.outfitThumbs.addEventListener('click', event => {
         const thumb = event.target.closest('[data-remove-id]');
-        if (thumb) toggleItem(Number(thumb.dataset.removeId));
+        if (thumb) removeOutfitItem(thumb.dataset.roleKey, Number(thumb.dataset.removeId));
       });
 
       el.modeAction.addEventListener('click', () => {
         state.mode = state.mode === 'wardrobe' ? 'item' : 'wardrobe';
-        state.selectionMode = state.mode === 'item' || state.pairing;
         renderMode();
-        renderSelectionMode();
         setFabMenu(false);
         showToast(state.mode === 'wardrobe' ? '已切换到衣柜模式' : '已切换到单品模式');
       });
       el.pairAction.addEventListener('click', () => setPairing(!state.pairing));
       el.pairDone.addEventListener('click', () => setPairing(!state.pairing));
       el.importAction.addEventListener('click', showImportSheet);
+      el.filterAction.addEventListener('click', () => {
+        setFabMenu(false);
+        setCategoryPanel(true);
+        el.categoryToggle.focus();
+      });
+      el.multiAction.addEventListener('click', () => setMultiSelect(!state.multiSelect));
       el.cancelImport.addEventListener('click', closeImportSheet);
       el.backdrop.addEventListener('click', closeImportSheet);
       el.mockImport.addEventListener('click', () => {
@@ -1493,12 +1942,14 @@
       document.addEventListener('pointerdown', event => {
         if (state.menuOpen && !event.target.closest('#fabLayer')) setFabMenu(false);
         if (el.categoryPanel.classList.contains('is-open') && !event.target.closest('#categoryPanel') && !event.target.closest('#categoryToggle')) setCategoryPanel(false);
+        if (el.characterMenu.classList.contains('is-open') && !event.target.closest('.target-cluster')) setCharacterMenu(false);
       });
 
       document.addEventListener('keydown', event => {
         if (event.key !== 'Escape') return;
         if (el.importSheet.classList.contains('is-open')) closeImportSheet();
         else if (state.menuOpen) setFabMenu(false);
+        else if (el.characterMenu.classList.contains('is-open')) setCharacterMenu(false);
         else if (el.categoryPanel.classList.contains('is-open')) setCategoryPanel(false);
         else if (el.searchPanel.classList.contains('is-open')) setSearch(false);
       });
@@ -1506,6 +1957,7 @@
       window.addEventListener('resize', updateChromeMetrics);
 
       renderCategories();
+      renderCharacterControls();
       renderGrid();
       renderMode();
       renderSelectionMode();
