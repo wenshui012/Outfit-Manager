@@ -885,19 +885,41 @@
 
     .tray-action {
       display: none;
-      width: 46px;
-      min-width: 46px;
-      height: 46px;
-      min-height: 46px;
-      margin-left: 9px;
+      width: 44px;
+      min-width: 44px;
+      height: 44px;
+      min-height: 44px;
       border-radius: 16px;
       background: rgba(255, 255, 255, 0.72);
     }
 
     .tray-action.is-active {
       display: grid;
+    }
+
+    #pairDone.is-active {
       background: #6f5b5f;
       color: white;
+    }
+
+    .tray-controls {
+      display: flex;
+      flex: 0 0 auto;
+      align-items: flex-end;
+      gap: 6px;
+      margin-left: 8px;
+    }
+
+    .tray-expand {
+      color: #6c6160;
+    }
+
+    .tray-expand .icon {
+      transition: transform 220ms var(--ease-out);
+    }
+
+    .tray-expand[aria-expanded="true"] .icon {
+      transform: rotate(180deg);
     }
 
     .fab-layer {
@@ -935,8 +957,12 @@
       vector-effect: non-scaling-stroke;
     }
 
-    .fab-layer[data-template="middle"] .orbit-lines ellipse {
+    .fab-layer[data-template="centerMiddle"] .orbit-lines ellipse {
       stroke-dasharray: 86 34 28 58;
+    }
+
+    .fab-layer[data-edge="true"] .orbit-lines ellipse {
+      stroke-dasharray: 104 48 34 82;
     }
 
     .fab,
@@ -1336,9 +1362,14 @@
 
       <aside class="outfit-tray" id="outfitTray" aria-label="当前穿搭">
         <div class="outfit-canvas" id="outfitThumbs"></div>
-        <button class="tray-action" id="pairDone" type="button" aria-label="完成搭配">
-          <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="m5 12.5 4.5 4.5L19 7.5"/></svg>
-        </button>
+        <div class="tray-controls">
+          <button class="tray-action tray-expand" id="trayToggle" type="button" aria-label="展开穿搭托盘" aria-controls="outfitThumbs" aria-expanded="false">
+            <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="m7 9.5 5 5 5-5"/></svg>
+          </button>
+          <button class="tray-action" id="pairDone" type="button" aria-label="完成搭配">
+            <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="m5 12.5 4.5 4.5L19 7.5"/></svg>
+          </button>
+        </div>
       </aside>
 
       <div class="backdrop" id="backdrop"></div>
@@ -1403,6 +1434,7 @@
         characterEditorMode: null,
         query: '',
         menuOpen: false,
+        trayExpanded: false,
         toastTimer: 0,
         fab: { x: 0, y: 0, initialized: false }
       };
@@ -1433,6 +1465,7 @@
         fabLayer: document.querySelector('#fabLayer'),
         outfitTray: document.querySelector('#outfitTray'),
         outfitThumbs: document.querySelector('#outfitThumbs'),
+        trayToggle: document.querySelector('#trayToggle'),
         pairDone: document.querySelector('#pairDone'),
         searchToggle: document.querySelector('#searchToggle'),
         searchPanel: document.querySelector('#searchPanel'),
@@ -1594,11 +1627,20 @@
 
       function updateTrayHeight() {
         const visible = el.outfitTray.classList.contains('is-visible');
-        const compact = el.outfitThumbs.classList.contains('is-compact');
         const maxHeight = Math.min(286, Math.max(164, el.app.clientHeight * 0.34));
-        const contentHeight = el.outfitThumbs.scrollHeight + 22;
-        const desired = !visible ? 96 : compact ? 106 : Math.min(maxHeight, Math.max(132, contentHeight));
+        const children = [...el.outfitThumbs.children];
+        const naturalCanvasHeight = el.outfitThumbs.classList.contains('is-compact')
+          ? Math.max(0, ...children.map(child => child.offsetHeight))
+          : children.length ? children.at(-1).offsetTop + children.at(-1).offsetHeight - el.outfitThumbs.offsetTop : 0;
+        const contentHeight = naturalCanvasHeight + 22;
+        const canExpand = visible && contentHeight > 108;
+        if (!canExpand) state.trayExpanded = false;
+        const desired = !visible ? 96 : state.trayExpanded ? Math.min(maxHeight, Math.max(132, contentHeight)) : 106;
         el.outfitTray.style.setProperty('--tray-height', `${Math.round(desired)}px`);
+        el.outfitTray.classList.toggle('is-user-expanded', state.trayExpanded);
+        el.trayToggle.classList.toggle('is-active', canExpand);
+        el.trayToggle.setAttribute('aria-expanded', String(state.trayExpanded));
+        el.trayToggle.setAttribute('aria-label', state.trayExpanded ? '收起穿搭托盘' : '展开穿搭托盘，可继续向下滚动');
         initializeFab();
       }
 
@@ -1754,20 +1796,26 @@
 
       function getFabBounds() {
         const appRect = el.app.getBoundingClientRect();
+        const layerRect = el.fabLayer.getBoundingClientRect();
         const fabSize = el.fab.offsetWidth || 62;
-        const pad = 12;
-        const trayClearance = el.outfitTray.classList.contains('is-visible') ? el.outfitTray.offsetHeight + 22 : Math.max(20, parseFloat(getComputedStyle(el.app).paddingBottom || 0));
-        const planetMinY = el.categoryBar.offsetTop + el.categoryBar.offsetHeight + 8;
-        const planetMaxY = el.outfitTray.classList.contains('is-visible') ? el.outfitTray.offsetTop - 8 : appRect.height - 12;
+        const pad = 6;
+        const appLeft = appRect.left - layerRect.left;
+        const appTop = appRect.top - layerRect.top;
         return {
-          minX: pad,
-          maxX: appRect.width - fabSize - pad,
-          minY: Math.max(planetMinY, pad),
-          maxY: appRect.height - fabSize - trayClearance,
-          planetMinY,
-          planetMaxY,
-          width: appRect.width,
-          height: appRect.height,
+          minX: appLeft + pad,
+          maxX: appLeft + appRect.width - fabSize - pad,
+          minY: appTop + pad,
+          maxY: appTop + appRect.height - fabSize - pad,
+          planetMinX: appLeft + 8,
+          planetMaxX: appLeft + appRect.width - 8,
+          planetMinY: appTop + 8,
+          planetMaxY: appTop + appRect.height - 8,
+          appLeft,
+          appTop,
+          appWidth: appRect.width,
+          appHeight: appRect.height,
+          width: layerRect.width,
+          height: layerRect.height,
           fabSize
         };
       }
@@ -1789,8 +1837,8 @@
           } catch (_) {
             restored = null;
           }
-          state.fab.x = Number.isFinite(restored?.xRatio) ? restored.xRatio * bounds.width - bounds.fabSize / 2 : bounds.maxX - 3;
-          state.fab.y = Number.isFinite(restored?.yRatio) ? restored.yRatio * bounds.height - bounds.fabSize / 2 : Math.max(bounds.minY, bounds.height * 0.56);
+          state.fab.x = Number.isFinite(restored?.xRatio) ? bounds.appLeft + restored.xRatio * bounds.appWidth - bounds.fabSize / 2 : bounds.maxX - 3;
+          state.fab.y = Number.isFinite(restored?.yRatio) ? bounds.appTop + restored.yRatio * bounds.appHeight - bounds.fabSize / 2 : Math.max(bounds.minY, bounds.appTop + bounds.appHeight * 0.56);
           state.fab.initialized = true;
         }
         clampFab();
@@ -1801,8 +1849,8 @@
         const bounds = getFabBounds();
         try {
           localStorage.setItem('outfit-ui-demo-fab-position', JSON.stringify({
-            xRatio: (state.fab.x + bounds.fabSize / 2) / bounds.width,
-            yRatio: (state.fab.y + bounds.fabSize / 2) / bounds.height
+            xRatio: (state.fab.x + bounds.fabSize / 2 - bounds.appLeft) / bounds.appWidth,
+            yRatio: (state.fab.y + bounds.fabSize / 2 - bounds.appTop) / bounds.appHeight
           }));
         } catch (_) {
           // File previews may disable storage; the in-memory position still remains stable.
@@ -1810,34 +1858,42 @@
       }
 
       function orbitTemplateFor(fabCenter, bounds) {
-        const usableHeight = Math.max(1, bounds.planetMaxY - bounds.planetMinY);
-        const yRatio = (fabCenter.y - bounds.planetMinY) / usableHeight;
-        const xRatio = fabCenter.x / bounds.width;
-        if (yRatio < 0.28) return 'top';
-        if (yRatio > 0.62 && xRatio < 0.34) return 'left';
-        if (yRatio > 0.62 && xRatio > 0.66) return 'right';
-        if (yRatio > 0.62) return 'centerBottom';
-        if (xRatio < 0.34) return 'left';
-        if (xRatio > 0.66) return 'right';
-        return 'middle';
+        const yRatio = (fabCenter.y - bounds.appTop) / bounds.appHeight;
+        const xRatio = (fabCenter.x - bounds.appLeft) / bounds.appWidth;
+        const vertical = yRatio < 0.33 ? 'Top' : yRatio > 0.67 ? 'Bottom' : 'Middle';
+        if (xRatio < 0.34) return `left${vertical}`;
+        if (xRatio > 0.66) return `right${vertical}`;
+        return `center${vertical}`;
       }
 
       function buildOrbitLayout(templateName, fabCenter, bounds) {
         const templates = {
-          right: {
-            pair: [205, 82], mode: [245, 86], import: [165, 112], filter: [275, 116], multi: [225, 122]
+          rightTop: {
+            pair: [165, 92], mode: [125, 105], import: [105, 158], filter: [135, 158], multi: [180, 150]
           },
-          left: {
-            pair: [335, 82], mode: [295, 86], import: [15, 112], filter: [265, 116], multi: [315, 122]
+          rightMiddle: {
+            pair: [205, 92], mode: [155, 94], import: [135, 154], filter: [225, 154], multi: [180, 150]
+          },
+          rightBottom: {
+            pair: [195, 92], mode: [235, 105], import: [255, 158], filter: [225, 158], multi: [180, 150]
+          },
+          leftTop: {
+            pair: [15, 92], mode: [55, 105], import: [75, 158], filter: [45, 158], multi: [0, 150]
+          },
+          leftMiddle: {
+            pair: [335, 92], mode: [25, 94], import: [45, 154], filter: [315, 154], multi: [0, 150]
+          },
+          leftBottom: {
+            pair: [345, 92], mode: [305, 105], import: [285, 158], filter: [315, 158], multi: [0, 150]
+          },
+          centerTop: {
+            pair: [145, 88], mode: [35, 90], import: [90, 158], filter: [115, 132], multi: [65, 134]
+          },
+          centerMiddle: {
+            pair: [205, 88], mode: [25, 90], import: [90, 124], filter: [270, 124], multi: [0, 140]
           },
           centerBottom: {
-            pair: [200, 84], mode: [340, 84], import: [270, 116], filter: [235, 118], multi: [305, 120]
-          },
-          middle: {
-            pair: [205, 82], mode: [25, 84], import: [95, 110], filter: [265, 116], multi: [335, 120]
-          },
-          top: {
-            pair: [145, 82], mode: [35, 84], import: [90, 116], filter: [120, 120], multi: [60, 122]
+            pair: [215, 88], mode: [325, 90], import: [270, 158], filter: [245, 132], multi: [295, 134]
           }
         };
         const planets = [
@@ -1848,10 +1904,12 @@
           { key: 'multi', node: el.multiAction, size: 44 }
         ];
         const base = templates[templateName];
-        const safe = 10;
-        const angleOffsets = [0, -9, 9, -17, 17];
-        const radiusOffsets = [0, 10, -8, 18, -14];
-        const scales = [1, 0.94, 0.88];
+        const safeInset = 2;
+        const edgeTemplate = templateName.startsWith('left') || templateName.startsWith('right');
+        const angleOffsets = edgeTemplate ? [0, -6, 6, -12, 12, -18, 18] : [0, -8, 8, -16, 16];
+        const radiusOffsets = edgeTemplate ? [0, 12, 24, -4, 36] : [0, 10, -8, 18, -14];
+        const scales = edgeTemplate ? [1, 1.06, 1.12] : [1, 0.96, 1.05, 0.9];
+        const visualGap = 14;
 
         for (const scale of scales) {
           const placed = [];
@@ -1874,9 +1932,9 @@
                   left: centerX - planet.size / 2,
                   top: centerY - planet.size / 2
                 };
-                const inside = rect.left >= safe && rect.left + rect.size <= bounds.width - safe && rect.top >= bounds.planetMinY && rect.top + rect.size <= bounds.planetMaxY;
-                const starGap = Math.hypot(centerX - fabCenter.x, centerY - fabCenter.y) >= bounds.fabSize / 2 + planet.size / 2 + 8;
-                const collision = placed.some(other => Math.hypot(centerX - other.centerX, centerY - other.centerY) < planet.size / 2 + other.size / 2 + 8);
+                const inside = rect.left >= bounds.planetMinX + safeInset && rect.left + rect.size <= bounds.planetMaxX - safeInset && rect.top >= bounds.planetMinY && rect.top + rect.size <= bounds.planetMaxY;
+                const starGap = Math.hypot(centerX - fabCenter.x, centerY - fabCenter.y) >= bounds.fabSize / 2 + planet.size / 2 + 10;
+                const collision = placed.some(other => Math.hypot(centerX - other.centerX, centerY - other.centerY) < planet.size / 2 + other.size / 2 + visualGap);
                 if (inside && starGap && !collision) {
                   chosen = rect;
                   break;
@@ -1899,7 +1957,9 @@
         const bounds = getFabBounds();
         const fabCenter = { x: state.fab.x + bounds.fabSize / 2, y: state.fab.y + bounds.fabSize / 2 };
         const primaryTemplate = orbitTemplateFor(fabCenter, bounds);
-        const fallbackTemplates = [primaryTemplate, 'centerBottom', 'middle', fabCenter.x > bounds.width / 2 ? 'right' : 'left', 'top'];
+        const verticalBand = fabCenter.y < bounds.appTop + bounds.appHeight * 0.33 ? 'Top' : fabCenter.y > bounds.appTop + bounds.appHeight * 0.67 ? 'Bottom' : 'Middle';
+        const sideBand = fabCenter.x < bounds.appLeft + bounds.appWidth * 0.5 ? 'left' : 'right';
+        const fallbackTemplates = [primaryTemplate, `${sideBand}${verticalBand}`, `center${verticalBand}`, 'centerMiddle'];
         let templateName = primaryTemplate;
         let layout = null;
         for (const candidate of [...new Set(fallbackTemplates)]) {
@@ -1909,8 +1969,9 @@
             break;
           }
         }
-        if (!layout) layout = buildOrbitLayout('centerBottom', fabCenter, { ...bounds, planetMinY: 10, planetMaxY: bounds.height - 10 }) || [];
+        if (!layout) layout = buildOrbitLayout(`center${verticalBand}`, fabCenter, bounds) || [];
         el.fabLayer.dataset.template = templateName;
+        el.fabLayer.dataset.edge = String(templateName.startsWith('left') || templateName.startsWith('right'));
 
         layout.forEach(planet => {
           planet.node.style.left = `${open ? planet.left : fabCenter.x - planet.size / 2}px`;
@@ -1924,13 +1985,14 @@
         const innerPlanets = layout.filter(planet => planet.key === 'pair' || planet.key === 'mode');
         const innerX = Math.max(62, ...innerPlanets.map(planet => Math.abs(planet.centerX - fabCenter.x) + 12));
         const innerY = Math.max(58, ...innerPlanets.map(planet => Math.abs(planet.centerY - fabCenter.y) + 12));
-        const rotations = { right: 22, left: -22, centerBottom: 0, middle: 15, top: 0 };
-        [[el.orbitOuter, outerX, outerY, rotations[templateName]], [el.orbitInner, innerX, innerY, -rotations[templateName] * 0.55]].forEach(([orbit, radiusX, radiusY, tilt]) => {
-          orbit.setAttribute('cx', fabCenter.x);
+        const edgeShift = templateName.startsWith('right') ? -26 : templateName.startsWith('left') ? 26 : 0;
+        const tilt = templateName.startsWith('right') ? 14 : templateName.startsWith('left') ? -14 : templateName === 'centerMiddle' ? 12 : 0;
+        [[el.orbitOuter, outerX + (edgeShift ? 12 : 0), outerY + (edgeShift ? 18 : 0), tilt, edgeShift], [el.orbitInner, innerX, innerY, -tilt * 0.5, edgeShift * 0.42]].forEach(([orbit, radiusX, radiusY, rotation, centerShift]) => {
+          orbit.setAttribute('cx', fabCenter.x + centerShift);
           orbit.setAttribute('cy', fabCenter.y);
           orbit.setAttribute('rx', radiusX);
           orbit.setAttribute('ry', radiusY);
-          orbit.setAttribute('transform', `rotate(${tilt} ${fabCenter.x} ${fabCenter.y})`);
+          orbit.setAttribute('transform', `rotate(${rotation} ${fabCenter.x + centerShift} ${fabCenter.y})`);
         });
       }
 
@@ -2096,6 +2158,11 @@
       });
       el.pairAction.addEventListener('click', () => setPairing(!state.pairing));
       el.pairDone.addEventListener('click', () => setPairing(!state.pairing));
+      el.trayToggle.addEventListener('click', () => {
+        state.trayExpanded = !state.trayExpanded;
+        if (!state.trayExpanded) el.outfitThumbs.scrollTo({ top: 0, behavior: 'smooth' });
+        updateTrayHeight();
+      });
       el.importAction.addEventListener('click', showImportSheet);
       el.filterAction.addEventListener('click', () => {
         setFabMenu(false);
