@@ -91,35 +91,46 @@
     .app-header {
       position: relative;
       z-index: 20;
-      padding: max(16px, env(safe-area-inset-top, 16px)) var(--gutter) 12px;
+      padding: max(10px, env(safe-area-inset-top, 10px)) var(--gutter) 10px;
       background: linear-gradient(180deg, rgba(248, 246, 243, 0.98), rgba(248, 246, 243, 0.9));
     }
 
     .top-row {
-      display: flex;
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) auto;
+      gap: 10px;
       align-items: center;
       justify-content: space-between;
-      min-height: 64px;
+      min-height: 60px;
     }
 
     .target-cluster {
       position: relative;
       display: flex;
-      min-width: 0;
+      width: max-content;
+      max-width: 100%;
+      min-width: 124px;
+      height: 58px;
       align-items: center;
-      gap: 10px;
+      gap: 4px;
+      padding: 3px 6px;
+      border: 1px solid var(--line);
+      border-radius: 26px;
+      background: rgba(255, 255, 255, 0.58);
+      box-shadow: 0 7px 22px rgba(52, 45, 42, 0.05);
+      transition: background 160ms ease, border-color 160ms ease;
     }
 
     .avatar-switcher {
       display: flex;
       align-items: center;
-      width: 104px;
-      height: 56px;
-      padding: 5px 11px;
-      border: 1px solid var(--line);
-      border-radius: 22px;
-      background: rgba(255, 255, 255, 0.58);
-      box-shadow: 0 7px 22px rgba(52, 45, 42, 0.05);
+      width: 112px;
+      height: 52px;
+      flex: 0 0 112px;
+      padding: 3px 10px;
+      border: 0;
+      border-radius: 23px;
+      background: transparent;
     }
 
     .avatar-button {
@@ -160,15 +171,16 @@
 
     .character-trigger {
       display: none;
-      max-width: 94px;
+      max-width: 76px;
       min-width: 0;
-      min-height: 44px;
-      padding: 0 8px;
+      height: 40px;
+      min-height: 40px;
+      padding: 0 7px 0 5px;
       border: 0;
       border-radius: 14px;
       background: transparent;
       color: #5f5856;
-      font-size: 14px;
+      font-size: 16px;
       font-weight: 600;
       cursor: pointer;
       transition: background 160ms ease, color 160ms ease;
@@ -205,7 +217,7 @@
       position: absolute;
       z-index: 48;
       top: calc(100% + 8px);
-      left: 72px;
+      left: 94px;
       width: min(228px, calc(100vw - 112px));
       padding: 8px;
       visibility: hidden;
@@ -302,6 +314,7 @@
     .top-actions {
       display: flex;
       gap: 10px;
+      flex: 0 0 auto;
     }
 
     .icon-button,
@@ -339,6 +352,13 @@
       color: var(--focus);
       border-color: rgba(118, 96, 100, 0.3);
       background: var(--accent-pale);
+    }
+
+    .top-actions .icon-button {
+      min-width: 46px;
+      min-height: 46px;
+      color: #6d6663;
+      box-shadow: 0 6px 18px rgba(52, 45, 42, 0.045);
     }
 
     .icon {
@@ -681,8 +701,9 @@
       left: var(--gutter);
       display: flex;
       align-items: flex-end;
-      max-height: 108px;
-      min-height: 106px;
+      height: var(--tray-height, 106px);
+      max-height: min(286px, 36dvh);
+      min-height: 96px;
       padding: 11px;
       visibility: hidden;
       border: 1px solid rgba(81, 70, 66, 0.14);
@@ -692,7 +713,7 @@
       opacity: 0;
       transform: translateY(18px) scale(0.98);
       backdrop-filter: blur(20px) saturate(0.92);
-      transition: opacity 180ms ease, transform 260ms var(--ease-out), max-height 260ms var(--ease-out), visibility 0s linear 260ms;
+      transition: opacity 180ms ease, transform 260ms var(--ease-out), height 280ms var(--ease-out), border-color 180ms ease, box-shadow 180ms ease, visibility 0s linear 260ms;
     }
 
     .outfit-tray.is-visible {
@@ -702,13 +723,15 @@
       transition-delay: 0s;
     }
 
-    .outfit-tray.is-expanded {
-      max-height: min(232px, 38dvh);
+    .outfit-tray.is-pairing {
+      border-color: rgba(111, 91, 95, 0.28);
+      box-shadow: 0 18px 44px rgba(65, 50, 54, 0.16);
     }
 
     .outfit-canvas {
       min-width: 0;
-      max-height: min(202px, calc(38dvh - 22px));
+      height: 100%;
+      max-height: none;
       flex: 1;
       overflow-y: auto;
       scrollbar-width: none;
@@ -760,6 +783,26 @@
       scroll-snap-type: x proximity;
       scrollbar-width: none;
       overscroll-behavior-inline: contain;
+    }
+
+    .outfit-role-row.is-double {
+      align-items: start;
+    }
+
+    .outfit-role-items.is-double {
+      display: grid;
+      grid-template-rows: repeat(2, 64px);
+      grid-auto-flow: column;
+      grid-auto-columns: 58px;
+      gap: 7px;
+    }
+
+    .outfit-role-items.is-double .outfit-thumb,
+    .outfit-role-items.is-double .outfit-slot {
+      width: 58px;
+      height: 64px;
+      flex-basis: 58px;
+      border-radius: 15px;
     }
 
     .outfit-thumb,
@@ -892,6 +935,10 @@
       vector-effect: non-scaling-stroke;
     }
 
+    .fab-layer[data-template="middle"] .orbit-lines ellipse {
+      stroke-dasharray: 86 34 28 58;
+    }
+
     .fab,
     .radial-action {
       position: absolute;
@@ -926,6 +973,10 @@
     .fab.is-dragging {
       transform: scale(0.96);
       box-shadow: 0 10px 26px rgba(65, 50, 54, 0.2);
+    }
+
+    .fab.is-open:not(.is-dragging) {
+      transform: scale(1.04);
     }
 
     .fab .icon {
@@ -1130,7 +1181,7 @@
       }
 
       .avatar-switcher {
-        height: 50px;
+        height: 48px;
       }
 
       .avatar-button {
@@ -1258,28 +1309,28 @@
 
       <div class="fab-layer" id="fabLayer" aria-label="快捷操作">
         <svg class="orbit-lines" id="orbitLines" aria-hidden="true"><ellipse id="orbitOuter"/><ellipse id="orbitInner"/></svg>
-        <button class="radial-action" id="modeAction" type="button" aria-label="切换到单品模式" style="--delay: 0ms; --planet-size: 56px; --planet-icon: 21px">
+        <button class="radial-action" id="modeAction" type="button" aria-label="切换到单品模式" style="--delay: 30ms; --planet-size: 54px; --planet-icon: 20px">
           <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M8.2 5.1 12 3l3.8 2.1 3.7 1.2-1.6 4.1-2.4-.9V21h-7V9.5l-2.4.9-1.6-4.1 3.7-1.2Z"/></svg>
           <span class="radial-label" id="modeActionLabel">单品</span>
         </button>
-        <button class="radial-action" id="pairAction" type="button" aria-label="进入搭配模式" style="--delay: 30ms; --planet-size: 54px; --planet-icon: 20px">
+        <button class="radial-action" id="pairAction" type="button" aria-label="进入搭配模式" style="--delay: 0ms; --planet-size: 52px; --planet-icon: 20px">
           <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M8.5 4.5a3.5 3.5 0 1 0 0 7h7a3.5 3.5 0 1 0 0-7h-7ZM8.5 12.5a3.5 3.5 0 1 0 0 7h7a3.5 3.5 0 1 0 0-7h-7Z"/></svg>
           <span class="radial-label">搭配</span>
         </button>
-        <button class="radial-action" id="importAction" type="button" aria-label="打开导入演示" style="--delay: 60ms; --planet-size: 50px; --planet-icon: 18px">
+        <button class="radial-action" id="importAction" type="button" aria-label="打开导入演示" style="--delay: 65ms; --planet-size: 48px; --planet-icon: 18px">
           <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3v12m0 0 4-4m-4 4-4-4M5 19h14"/></svg>
           <span class="radial-label">导入</span>
         </button>
-        <button class="radial-action" id="filterAction" type="button" aria-label="筛选当前衣库" style="--delay: 90ms; --planet-size: 46px; --planet-icon: 17px">
+        <button class="radial-action" id="filterAction" type="button" aria-label="筛选当前衣库" style="--delay: 95ms; --planet-size: 44px; --planet-icon: 17px">
           <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 6h16M7 12h10M10 18h4"/></svg>
           <span class="radial-label">筛选</span>
         </button>
-        <button class="radial-action" id="multiAction" type="button" aria-label="开启多选" aria-pressed="false" style="--delay: 120ms; --planet-size: 46px; --planet-icon: 17px">
+        <button class="radial-action" id="multiAction" type="button" aria-label="开启多选" aria-pressed="false" style="--delay: 125ms; --planet-size: 44px; --planet-icon: 17px">
           <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M8 3H5a2 2 0 0 0-2 2v3M16 3h3a2 2 0 0 1 2 2v3M8 21H5a2 2 0 0 1-2-2v-3M16 21h3a2 2 0 0 0 2-2v-3" stroke-dasharray="3 2"/></svg>
           <span class="radial-label">多选</span>
         </button>
         <button class="fab" id="fab" type="button" aria-label="展开快捷操作，可拖动" aria-expanded="false">
-          <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg>
+          <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="m12 3.8 2.45 4.96 5.48.8-3.97 3.86.94 5.46L12 16.3l-4.9 2.58.94-5.46L4.07 9.56l5.48-.8L12 3.8Z"/></svg>
         </button>
       </div>
 
@@ -1525,19 +1576,30 @@
           })).join('') + (state.pairing && totalItems < 4 ? Array.from({ length: 4 - totalItems }, (_, index) => `<span class="outfit-slot" aria-label="空搭配位 ${index + 1}">+</span>`).join('') : '');
         } else {
           el.outfitThumbs.innerHTML = roleEntries.map(role => {
+            const doubleRow = role.itemIds.length > 2;
             const rowItems = role.itemIds.map(id => {
               const item = items.find(entry => entry.id === id);
               return item ? renderOutfitThumb(item, role.name, role.key) : '';
             }).join('');
             const slots = state.pairing && role.key === currentOutfitKey() ? Array.from({ length: Math.max(0, 4 - role.itemIds.length) }, (_, index) => `<span class="outfit-slot" aria-label="${role.name} 的空搭配位 ${index + 1}">+</span>`).join('') : '';
-            return `<section class="outfit-role-row" aria-label="${role.name} 的当前穿搭"><span class="outfit-role-label">${role.name}</span><div class="outfit-role-items">${rowItems}${slots}</div></section>`;
+            return `<section class="outfit-role-row${doubleRow ? ' is-double' : ''}" aria-label="${role.name} 的当前穿搭"><span class="outfit-role-label">${role.name}</span><div class="outfit-role-items${doubleRow ? ' is-double' : ''}">${rowItems}${slots}</div></section>`;
           }).join('');
         }
 
         el.outfitTray.classList.toggle('is-visible', totalItems > 0 || state.pairing);
         el.pairDone.classList.toggle('is-active', state.pairing);
         el.pairDone.setAttribute('aria-label', '完成搭配');
-        requestAnimationFrame(initializeFab);
+        requestAnimationFrame(updateTrayHeight);
+      }
+
+      function updateTrayHeight() {
+        const visible = el.outfitTray.classList.contains('is-visible');
+        const compact = el.outfitThumbs.classList.contains('is-compact');
+        const maxHeight = Math.min(286, Math.max(164, el.app.clientHeight * 0.34));
+        const contentHeight = el.outfitThumbs.scrollHeight + 22;
+        const desired = !visible ? 96 : compact ? 106 : Math.min(maxHeight, Math.max(132, contentHeight));
+        el.outfitTray.style.setProperty('--tray-height', `${Math.round(desired)}px`);
+        initializeFab();
       }
 
       function renderMode() {
@@ -1684,7 +1746,8 @@
         state.menuOpen = open;
         el.fab.setAttribute('aria-expanded', String(open));
         el.fab.setAttribute('aria-label', open ? '收起快捷操作，可拖动' : '展开快捷操作，可拖动');
-        [el.modeAction, el.pairAction, el.importAction, el.filterAction, el.multiAction].forEach(action => action.classList.toggle('is-visible', open));
+        el.fab.classList.toggle('is-open', open);
+        [el.pairAction, el.modeAction, el.importAction, el.filterAction, el.multiAction].forEach(action => action.classList.toggle('is-visible', open));
         el.orbitLines.classList.toggle('is-visible', open);
         positionRadialActions(open);
       }
@@ -1694,11 +1757,15 @@
         const fabSize = el.fab.offsetWidth || 62;
         const pad = 12;
         const trayClearance = el.outfitTray.classList.contains('is-visible') ? el.outfitTray.offsetHeight + 22 : Math.max(20, parseFloat(getComputedStyle(el.app).paddingBottom || 0));
+        const planetMinY = el.categoryBar.offsetTop + el.categoryBar.offsetHeight + 8;
+        const planetMaxY = el.outfitTray.classList.contains('is-visible') ? el.outfitTray.offsetTop - 8 : appRect.height - 12;
         return {
           minX: pad,
           maxX: appRect.width - fabSize - pad,
-          minY: Math.max(el.categoryBar.offsetTop + el.categoryBar.offsetHeight + 8, pad),
+          minY: Math.max(planetMinY, pad),
           maxY: appRect.height - fabSize - trayClearance,
+          planetMinY,
+          planetMaxY,
           width: appRect.width,
           height: appRect.height,
           fabSize
@@ -1716,53 +1783,153 @@
       function initializeFab() {
         const bounds = getFabBounds();
         if (!state.fab.initialized) {
-          state.fab.x = bounds.maxX - 3;
-          state.fab.y = Math.max(bounds.minY, bounds.height * 0.56);
+          let restored = null;
+          try {
+            restored = JSON.parse(localStorage.getItem('outfit-ui-demo-fab-position') || 'null');
+          } catch (_) {
+            restored = null;
+          }
+          state.fab.x = Number.isFinite(restored?.xRatio) ? restored.xRatio * bounds.width - bounds.fabSize / 2 : bounds.maxX - 3;
+          state.fab.y = Number.isFinite(restored?.yRatio) ? restored.yRatio * bounds.height - bounds.fabSize / 2 : Math.max(bounds.minY, bounds.height * 0.56);
           state.fab.initialized = true;
         }
         clampFab();
         positionRadialActions(state.menuOpen);
       }
 
+      function persistFabPosition() {
+        const bounds = getFabBounds();
+        try {
+          localStorage.setItem('outfit-ui-demo-fab-position', JSON.stringify({
+            xRatio: (state.fab.x + bounds.fabSize / 2) / bounds.width,
+            yRatio: (state.fab.y + bounds.fabSize / 2) / bounds.height
+          }));
+        } catch (_) {
+          // File previews may disable storage; the in-memory position still remains stable.
+        }
+      }
+
+      function orbitTemplateFor(fabCenter, bounds) {
+        const usableHeight = Math.max(1, bounds.planetMaxY - bounds.planetMinY);
+        const yRatio = (fabCenter.y - bounds.planetMinY) / usableHeight;
+        const xRatio = fabCenter.x / bounds.width;
+        if (yRatio < 0.28) return 'top';
+        if (yRatio > 0.62 && xRatio < 0.34) return 'left';
+        if (yRatio > 0.62 && xRatio > 0.66) return 'right';
+        if (yRatio > 0.62) return 'centerBottom';
+        if (xRatio < 0.34) return 'left';
+        if (xRatio > 0.66) return 'right';
+        return 'middle';
+      }
+
+      function buildOrbitLayout(templateName, fabCenter, bounds) {
+        const templates = {
+          right: {
+            pair: [205, 82], mode: [245, 86], import: [165, 112], filter: [275, 116], multi: [225, 122]
+          },
+          left: {
+            pair: [335, 82], mode: [295, 86], import: [15, 112], filter: [265, 116], multi: [315, 122]
+          },
+          centerBottom: {
+            pair: [200, 84], mode: [340, 84], import: [270, 116], filter: [235, 118], multi: [305, 120]
+          },
+          middle: {
+            pair: [205, 82], mode: [25, 84], import: [95, 110], filter: [265, 116], multi: [335, 120]
+          },
+          top: {
+            pair: [145, 82], mode: [35, 84], import: [90, 116], filter: [120, 120], multi: [60, 122]
+          }
+        };
+        const planets = [
+          { key: 'pair', node: el.pairAction, size: 52 },
+          { key: 'mode', node: el.modeAction, size: 54 },
+          { key: 'import', node: el.importAction, size: 48 },
+          { key: 'filter', node: el.filterAction, size: 44 },
+          { key: 'multi', node: el.multiAction, size: 44 }
+        ];
+        const base = templates[templateName];
+        const safe = 10;
+        const angleOffsets = [0, -9, 9, -17, 17];
+        const radiusOffsets = [0, 10, -8, 18, -14];
+        const scales = [1, 0.94, 0.88];
+
+        for (const scale of scales) {
+          const placed = [];
+          let failed = false;
+          for (const planet of planets) {
+            const [baseAngle, baseRadius] = base[planet.key];
+            let chosen = null;
+            for (const angleOffset of angleOffsets) {
+              for (const radiusOffset of radiusOffsets) {
+                const angle = (baseAngle + angleOffset) * Math.PI / 180;
+                const radius = baseRadius * scale + radiusOffset;
+                const centerX = fabCenter.x + Math.cos(angle) * radius;
+                const centerY = fabCenter.y + Math.sin(angle) * radius;
+                const rect = {
+                  key: planet.key,
+                  node: planet.node,
+                  size: planet.size,
+                  centerX,
+                  centerY,
+                  left: centerX - planet.size / 2,
+                  top: centerY - planet.size / 2
+                };
+                const inside = rect.left >= safe && rect.left + rect.size <= bounds.width - safe && rect.top >= bounds.planetMinY && rect.top + rect.size <= bounds.planetMaxY;
+                const starGap = Math.hypot(centerX - fabCenter.x, centerY - fabCenter.y) >= bounds.fabSize / 2 + planet.size / 2 + 8;
+                const collision = placed.some(other => Math.hypot(centerX - other.centerX, centerY - other.centerY) < planet.size / 2 + other.size / 2 + 8);
+                if (inside && starGap && !collision) {
+                  chosen = rect;
+                  break;
+                }
+              }
+              if (chosen) break;
+            }
+            if (!chosen) {
+              failed = true;
+              break;
+            }
+            placed.push(chosen);
+          }
+          if (!failed) return placed;
+        }
+        return null;
+      }
+
       function positionRadialActions(open) {
         const bounds = getFabBounds();
         const fabCenter = { x: state.fab.x + bounds.fabSize / 2, y: state.fab.y + bounds.fabSize / 2 };
-        const horizontal = fabCenter.x > bounds.width / 2 ? -1 : 1;
-        const vertical = fabCenter.y > bounds.height / 2 ? -1 : 1;
-        const planets = [
-          { node: el.modeAction, size: 56, x: horizontal * 0.34, y: vertical * 1.02 },
-          { node: el.pairAction, size: 54, x: horizontal * 0.94, y: vertical * 0.64 },
-          { node: el.importAction, size: 50, x: horizontal * 1.42, y: vertical * 0.18 },
-          { node: el.filterAction, size: 46, x: horizontal * 0.9, y: vertical * 1.34 },
-          { node: el.multiAction, size: 46, x: horizontal * 1.48, y: vertical * 1.02 }
-        ];
-        let radius = 96;
-        const safe = 10;
-
-        while (radius > 62) {
-          const fits = planets.every(planet => {
-            const left = fabCenter.x - planet.size / 2 + planet.x * radius;
-            const top = fabCenter.y - planet.size / 2 + planet.y * radius;
-            return left >= safe && left + planet.size <= bounds.width - safe && top >= bounds.minY - 6 && top + planet.size <= bounds.height - safe;
-          });
-          if (fits) break;
-          radius -= 3;
+        const primaryTemplate = orbitTemplateFor(fabCenter, bounds);
+        const fallbackTemplates = [primaryTemplate, 'centerBottom', 'middle', fabCenter.x > bounds.width / 2 ? 'right' : 'left', 'top'];
+        let templateName = primaryTemplate;
+        let layout = null;
+        for (const candidate of [...new Set(fallbackTemplates)]) {
+          layout = buildOrbitLayout(candidate, fabCenter, bounds);
+          if (layout) {
+            templateName = candidate;
+            break;
+          }
         }
+        if (!layout) layout = buildOrbitLayout('centerBottom', fabCenter, { ...bounds, planetMinY: 10, planetMaxY: bounds.height - 10 }) || [];
+        el.fabLayer.dataset.template = templateName;
 
-        planets.forEach(planet => {
-          const left = open ? fabCenter.x - planet.size / 2 + planet.x * radius : fabCenter.x - planet.size / 2;
-          const top = open ? fabCenter.y - planet.size / 2 + planet.y * radius : fabCenter.y - planet.size / 2;
-          planet.node.style.left = `${Math.min(bounds.width - planet.size - safe, Math.max(safe, left))}px`;
-          planet.node.style.top = `${Math.min(bounds.height - planet.size - safe, Math.max(bounds.minY - 6, top))}px`;
+        layout.forEach(planet => {
+          planet.node.style.left = `${open ? planet.left : fabCenter.x - planet.size / 2}px`;
+          planet.node.style.top = `${open ? planet.top : fabCenter.y - planet.size / 2}px`;
         });
 
         el.orbitLines.setAttribute('viewBox', `0 0 ${bounds.width} ${bounds.height}`);
-        const rotation = horizontal * vertical * 27;
-        [[el.orbitOuter, 1.62, 1.08, rotation], [el.orbitInner, 1.1, 0.72, -rotation * 0.72]].forEach(([orbit, scaleX, scaleY, tilt]) => {
+        const offsets = layout.map(planet => ({ x: Math.abs(planet.centerX - fabCenter.x), y: Math.abs(planet.centerY - fabCenter.y) }));
+        const outerX = Math.max(82, ...offsets.map(point => point.x + 18));
+        const outerY = Math.max(74, ...offsets.map(point => point.y + 18));
+        const innerPlanets = layout.filter(planet => planet.key === 'pair' || planet.key === 'mode');
+        const innerX = Math.max(62, ...innerPlanets.map(planet => Math.abs(planet.centerX - fabCenter.x) + 12));
+        const innerY = Math.max(58, ...innerPlanets.map(planet => Math.abs(planet.centerY - fabCenter.y) + 12));
+        const rotations = { right: 22, left: -22, centerBottom: 0, middle: 15, top: 0 };
+        [[el.orbitOuter, outerX, outerY, rotations[templateName]], [el.orbitInner, innerX, innerY, -rotations[templateName] * 0.55]].forEach(([orbit, radiusX, radiusY, tilt]) => {
           orbit.setAttribute('cx', fabCenter.x);
           orbit.setAttribute('cy', fabCenter.y);
-          orbit.setAttribute('rx', radius * scaleX);
-          orbit.setAttribute('ry', radius * scaleY);
+          orbit.setAttribute('rx', radiusX);
+          orbit.setAttribute('ry', radiusY);
           orbit.setAttribute('transform', `rotate(${tilt} ${fabCenter.x} ${fabCenter.y})`);
         });
       }
@@ -1815,11 +1982,13 @@
           const dx = event.clientX - start.x;
           const dy = event.clientY - start.y;
           if (!dragged && Math.hypot(dx, dy) < 6) return;
-          dragged = true;
+          if (!dragged) {
+            dragged = true;
+            if (state.menuOpen) setFabMenu(false);
+          }
           state.fab.x = origin.x + dx;
           state.fab.y = origin.y + dy;
           clampFab();
-          positionRadialActions(state.menuOpen);
         });
 
         const finish = event => {
@@ -1827,6 +1996,7 @@
           el.fab.classList.remove('is-dragging');
           if (el.fab.hasPointerCapture(pointerId)) el.fab.releasePointerCapture(pointerId);
           if (!dragged) setFabMenu(!state.menuOpen);
+          else persistFabPosition();
           pointerId = null;
           start = null;
           origin = null;
@@ -1843,6 +2013,7 @@
             state.fab.y += moves[event.key][1];
             clampFab();
             positionRadialActions(state.menuOpen);
+            persistFabPosition();
           }
         });
         el.fab.addEventListener('click', event => {
