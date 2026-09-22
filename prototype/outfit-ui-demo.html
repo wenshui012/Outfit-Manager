@@ -1,0 +1,1518 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="color-scheme" content="light">
+  <meta name="theme-color" content="#f6f3f0">
+  <title>Outfit Manager · DOM 原型</title>
+  <style>
+    :root {
+      --page: #eee8e5;
+      --surface: #f8f6f3;
+      --surface-strong: rgba(255, 255, 255, 0.88);
+      --glass: rgba(252, 251, 249, 0.78);
+      --glass-strong: rgba(255, 255, 255, 0.9);
+      --ink: #292727;
+      --ink-soft: #706b68;
+      --line: rgba(67, 59, 55, 0.1);
+      --line-strong: rgba(67, 59, 55, 0.18);
+      --accent: #8e7778;
+      --accent-soft: #eee4e3;
+      --accent-pale: #f5eeee;
+      --focus: #766064;
+      --shadow-soft: 0 10px 30px rgba(52, 45, 42, 0.08);
+      --shadow-float: 0 16px 42px rgba(52, 45, 42, 0.14);
+      --ease-out: cubic-bezier(0.22, 1, 0.36, 1);
+      --ease-in: cubic-bezier(0.4, 0, 1, 1);
+      --gutter: clamp(14px, 4.2vw, 20px);
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    html,
+    body {
+      height: 100%;
+      margin: 0;
+    }
+
+    body {
+      position: fixed;
+      inset: 0;
+      min-width: 320px;
+      width: 100%;
+      overflow: hidden;
+      background:
+        radial-gradient(circle at 15% 12%, rgba(244, 226, 226, 0.92), transparent 34%),
+        radial-gradient(circle at 85% 88%, rgba(225, 232, 231, 0.72), transparent 32%),
+        var(--page);
+      color: var(--ink);
+      font-family: -apple-system, BlinkMacSystemFont, "SF Pro Display", "PingFang SC", "Microsoft YaHei", sans-serif;
+      -webkit-font-smoothing: antialiased;
+      -webkit-tap-highlight-color: transparent;
+    }
+
+    button,
+    input {
+      font: inherit;
+    }
+
+    button {
+      color: inherit;
+    }
+
+    button,
+    [role="button"] {
+      touch-action: manipulation;
+    }
+
+    .stage {
+      display: grid;
+      height: 100dvh;
+      min-height: 100dvh;
+      overflow: hidden;
+      place-items: center;
+    }
+
+    .wardrobe-app {
+      position: relative;
+      isolation: isolate;
+      width: min(100%, 430px);
+      height: 100dvh;
+      min-height: 560px;
+      overflow: hidden;
+      background:
+        linear-gradient(180deg, rgba(255, 255, 255, 0.42), transparent 24%),
+        var(--surface);
+    }
+
+    .app-header {
+      position: relative;
+      z-index: 20;
+      padding: max(16px, env(safe-area-inset-top, 16px)) var(--gutter) 12px;
+      background: linear-gradient(180deg, rgba(248, 246, 243, 0.98), rgba(248, 246, 243, 0.9));
+    }
+
+    .top-row {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      min-height: 64px;
+    }
+
+    .avatar-switcher {
+      display: flex;
+      align-items: center;
+      width: 124px;
+      height: 56px;
+      padding: 5px 11px;
+      border: 1px solid var(--line);
+      border-radius: 22px;
+      background: rgba(255, 255, 255, 0.58);
+      box-shadow: 0 7px 22px rgba(52, 45, 42, 0.05);
+    }
+
+    .avatar-button {
+      position: relative;
+      display: grid;
+      width: 46px;
+      height: 46px;
+      flex: 0 0 46px;
+      padding: 0;
+      place-items: center;
+      overflow: hidden;
+      border: 2px solid rgba(255, 255, 255, 0.92);
+      border-radius: 50%;
+      background: #e6e4df;
+      box-shadow: 0 0 0 1px transparent;
+      cursor: pointer;
+      transition: opacity 180ms ease, transform 220ms var(--ease-out), box-shadow 180ms ease;
+    }
+
+    .avatar-button + .avatar-button {
+      margin-left: -10px;
+    }
+
+    .avatar-button:not(.is-active) {
+      opacity: 0.62;
+      transform: scale(0.9);
+    }
+
+    .avatar-button.is-active {
+      z-index: 2;
+      box-shadow: 0 0 0 2px rgba(142, 119, 120, 0.45);
+    }
+
+    .avatar-button svg {
+      width: 100%;
+      height: 100%;
+    }
+
+    .avatar-target {
+      margin-left: 8px;
+      color: var(--ink-soft);
+      font-size: 11px;
+      font-weight: 600;
+      letter-spacing: 0.08em;
+    }
+
+    .top-actions {
+      display: flex;
+      gap: 10px;
+    }
+
+    .icon-button,
+    .expand-button,
+    .tray-action {
+      display: grid;
+      min-width: 48px;
+      min-height: 48px;
+      padding: 0;
+      place-items: center;
+      border: 1px solid var(--line);
+      border-radius: 50%;
+      background: rgba(255, 255, 255, 0.64);
+      box-shadow: 0 7px 22px rgba(52, 45, 42, 0.055);
+      cursor: pointer;
+      transition: background 160ms ease, border-color 160ms ease, transform 120ms ease;
+    }
+
+    .icon-button:hover,
+    .expand-button:hover,
+    .tray-action:hover {
+      background: rgba(255, 255, 255, 0.92);
+      border-color: var(--line-strong);
+    }
+
+    .icon-button:active,
+    .expand-button:active,
+    .tray-action:active,
+    .category-chip:active,
+    .card:active {
+      transform: scale(0.96);
+    }
+
+    .icon-button[aria-pressed="true"] {
+      color: var(--focus);
+      border-color: rgba(118, 96, 100, 0.3);
+      background: var(--accent-pale);
+    }
+
+    .icon {
+      width: 22px;
+      height: 22px;
+      fill: none;
+      stroke: currentColor;
+      stroke-linecap: round;
+      stroke-linejoin: round;
+      stroke-width: 1.7;
+    }
+
+    .search-panel {
+      display: grid;
+      grid-template-rows: 0fr;
+      opacity: 0;
+      transition: grid-template-rows 220ms var(--ease-out), opacity 160ms ease;
+    }
+
+    .search-panel.is-open {
+      grid-template-rows: 1fr;
+      opacity: 1;
+    }
+
+    .search-panel-inner {
+      min-height: 0;
+      overflow: hidden;
+    }
+
+    .search-field-wrap {
+      position: relative;
+      margin-top: 10px;
+    }
+
+    .search-field-wrap .icon {
+      position: absolute;
+      top: 50%;
+      left: 16px;
+      width: 18px;
+      height: 18px;
+      transform: translateY(-50%);
+      color: var(--ink-soft);
+      pointer-events: none;
+    }
+
+    .search-field {
+      width: 100%;
+      height: 46px;
+      padding: 0 44px;
+      border: 1px solid var(--line);
+      outline: none;
+      border-radius: 16px;
+      background: rgba(255, 255, 255, 0.72);
+      color: var(--ink);
+      font-size: 16px;
+      transition: border-color 160ms ease, box-shadow 160ms ease;
+    }
+
+    .search-field::placeholder {
+      color: #99918e;
+    }
+
+    .clear-search {
+      position: absolute;
+      top: 50%;
+      right: 5px;
+      width: 38px;
+      height: 38px;
+      padding: 0;
+      border: 0;
+      border-radius: 50%;
+      background: transparent;
+      color: var(--ink-soft);
+      cursor: pointer;
+      transform: translateY(-50%);
+    }
+
+    .category-bar {
+      position: relative;
+      z-index: 19;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      min-height: 62px;
+      padding: 8px var(--gutter) 10px;
+      border-bottom: 1px solid rgba(146, 125, 131, 0.12);
+      background: rgba(244, 241, 238, 0.9);
+    }
+
+    .category-scroller {
+      display: flex;
+      min-width: 0;
+      flex: 1;
+      gap: 8px;
+      overflow-x: auto;
+      scrollbar-width: none;
+      overscroll-behavior-inline: contain;
+    }
+
+    .category-scroller::-webkit-scrollbar,
+    .outfit-thumbs::-webkit-scrollbar {
+      display: none;
+    }
+
+    .category-chip {
+      min-width: max-content;
+      min-height: 38px;
+      padding: 0 15px;
+      border: 1px solid transparent;
+      border-radius: 15px;
+      background: rgba(255, 255, 255, 0.62);
+      color: var(--ink-soft);
+      font-size: 13px;
+      font-weight: 500;
+      cursor: pointer;
+      transition: background 160ms ease, color 160ms ease, border-color 160ms ease, transform 120ms ease;
+    }
+
+    .category-chip.is-active {
+      border-color: rgba(142, 119, 120, 0.14);
+      background: var(--accent-soft);
+      color: #55484a;
+      box-shadow: 0 5px 16px rgba(80, 63, 66, 0.05);
+    }
+
+    .expand-button {
+      width: 44px;
+      min-width: 44px;
+      height: 44px;
+      min-height: 44px;
+      border-radius: 15px;
+      background: rgba(255, 255, 255, 0.76);
+    }
+
+    .expand-button .icon {
+      transition: transform 220ms var(--ease-out);
+    }
+
+    .expand-button[aria-expanded="true"] .icon {
+      transform: rotate(180deg);
+    }
+
+    .category-panel {
+      position: absolute;
+      z-index: 50;
+      top: calc(var(--category-bottom, 140px) + 6px);
+      right: var(--gutter);
+      left: var(--gutter);
+      padding: 14px;
+      visibility: hidden;
+      border: 1px solid var(--line);
+      border-radius: 22px;
+      background: rgba(252, 251, 249, 0.94);
+      box-shadow: var(--shadow-float);
+      opacity: 0;
+      transform: translateY(-8px) scale(0.98);
+      transform-origin: top right;
+      backdrop-filter: blur(18px) saturate(0.9);
+      transition: opacity 160ms ease, transform 220ms var(--ease-out), visibility 0s linear 220ms;
+    }
+
+    .category-panel.is-open {
+      visibility: visible;
+      opacity: 1;
+      transform: translateY(0) scale(1);
+      transition-delay: 0s;
+    }
+
+    .category-panel-head {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      margin-bottom: 12px;
+    }
+
+    .category-panel-title {
+      margin: 0;
+      font-size: 14px;
+      font-weight: 600;
+    }
+
+    .category-panel-copy {
+      color: var(--ink-soft);
+      font-size: 12px;
+    }
+
+    .category-grid {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 8px;
+    }
+
+    .category-grid .category-chip {
+      width: 100%;
+      min-width: 0;
+      padding-inline: 8px;
+    }
+
+    .content-scroll {
+      height: calc(100% - var(--chrome-height, 142px));
+      overflow-x: hidden;
+      overflow-y: auto;
+      overscroll-behavior: contain;
+      scrollbar-width: none;
+    }
+
+    .content-scroll::-webkit-scrollbar {
+      width: 0;
+    }
+
+    .context-row {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      min-height: 42px;
+      padding: 9px var(--gutter) 4px;
+    }
+
+    .mode-label {
+      display: inline-flex;
+      align-items: center;
+      gap: 7px;
+      color: var(--ink-soft);
+      font-size: 12px;
+      font-weight: 500;
+      letter-spacing: 0.02em;
+    }
+
+    .mode-dot {
+      width: 7px;
+      height: 7px;
+      border-radius: 50%;
+      background: var(--accent);
+      box-shadow: 0 0 0 4px var(--accent-pale);
+    }
+
+    .result-count {
+      color: #918986;
+      font-size: 11px;
+    }
+
+    .wardrobe-grid {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: clamp(8px, 2.4vw, 11px);
+      padding: 8px var(--gutter) calc(148px + env(safe-area-inset-bottom, 0px));
+    }
+
+    .card {
+      position: relative;
+      min-width: 0;
+      padding: 0;
+      overflow: hidden;
+      border: 1px solid transparent;
+      border-radius: 18px;
+      outline: none;
+      background: var(--card-bg, #e9e5e0);
+      cursor: pointer;
+      aspect-ratio: 0.74;
+      transition: transform 140ms ease, border-color 180ms ease, box-shadow 180ms ease, opacity 180ms ease;
+    }
+
+    .card:nth-child(5n + 2),
+    .card:nth-child(7n) {
+      aspect-ratio: 0.78;
+    }
+
+    .card:hover {
+      box-shadow: 0 8px 24px rgba(53, 47, 44, 0.08);
+    }
+
+    .card.is-selected {
+      border-color: rgba(91, 72, 76, 0.42);
+      box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.72), 0 9px 28px rgba(73, 60, 62, 0.12);
+    }
+
+    .card.is-filtered {
+      display: none;
+    }
+
+    .card-visual,
+    .card-visual svg {
+      display: block;
+      width: 100%;
+      height: 100%;
+    }
+
+    .card-check {
+      position: absolute;
+      top: 8px;
+      right: 8px;
+      display: grid;
+      width: 25px;
+      height: 25px;
+      place-items: center;
+      border: 1px solid rgba(255, 255, 255, 0.72);
+      border-radius: 50%;
+      background: rgba(246, 243, 240, 0.76);
+      box-shadow: 0 4px 12px rgba(52, 45, 42, 0.08);
+      opacity: 0;
+      transform: scale(0.8);
+      backdrop-filter: blur(8px);
+      transition: opacity 160ms ease, transform 180ms var(--ease-out);
+    }
+
+    .selection-mode .card-check,
+    .card.is-selected .card-check {
+      opacity: 1;
+      transform: scale(1);
+    }
+
+    .card.is-selected .card-check {
+      background: #6f5b5f;
+      color: white;
+    }
+
+    .card-check .icon {
+      width: 14px;
+      height: 14px;
+      stroke-width: 2;
+    }
+
+    .empty-result {
+      display: none;
+      grid-column: 1 / -1;
+      padding: 56px 24px;
+      color: var(--ink-soft);
+      text-align: center;
+      font-size: 14px;
+      line-height: 1.7;
+    }
+
+    .empty-result.is-visible {
+      display: block;
+    }
+
+    .outfit-tray {
+      position: absolute;
+      z-index: 35;
+      right: var(--gutter);
+      bottom: max(12px, env(safe-area-inset-bottom, 12px));
+      left: var(--gutter);
+      display: flex;
+      align-items: center;
+      min-height: 106px;
+      padding: 11px;
+      visibility: hidden;
+      border: 1px solid rgba(81, 70, 66, 0.14);
+      border-radius: 25px;
+      background: var(--glass);
+      box-shadow: var(--shadow-float);
+      opacity: 0;
+      transform: translateY(18px) scale(0.98);
+      backdrop-filter: blur(20px) saturate(0.92);
+      transition: opacity 180ms ease, transform 260ms var(--ease-out), visibility 0s linear 260ms;
+    }
+
+    .outfit-tray.is-visible {
+      visibility: visible;
+      opacity: 1;
+      transform: translateY(0) scale(1);
+      transition-delay: 0s;
+    }
+
+    .outfit-thumbs {
+      display: flex;
+      min-width: 0;
+      flex: 1;
+      gap: 8px;
+      overflow-x: auto;
+      scroll-snap-type: x proximity;
+      scrollbar-width: none;
+      overscroll-behavior-inline: contain;
+    }
+
+    .outfit-thumb,
+    .outfit-slot {
+      position: relative;
+      width: 70px;
+      height: 80px;
+      flex: 0 0 70px;
+      overflow: hidden;
+      border: 1px solid rgba(83, 72, 67, 0.08);
+      border-radius: 17px;
+      background: rgba(255, 255, 255, 0.6);
+      scroll-snap-align: start;
+    }
+
+    .outfit-thumb {
+      padding: 0;
+      cursor: pointer;
+    }
+
+    .outfit-thumb svg {
+      width: 100%;
+      height: 100%;
+    }
+
+    .outfit-thumb::after {
+      position: absolute;
+      top: 5px;
+      right: 5px;
+      display: grid;
+      width: 20px;
+      height: 20px;
+      place-items: center;
+      border-radius: 50%;
+      background: rgba(255, 255, 255, 0.82);
+      color: #5f5351;
+      content: "×";
+      font-size: 15px;
+      line-height: 1;
+      opacity: 0;
+      transition: opacity 140ms ease;
+    }
+
+    .outfit-thumb:hover::after,
+    .outfit-thumb:focus-visible::after {
+      opacity: 1;
+    }
+
+    .outfit-slot {
+      display: grid;
+      place-items: center;
+      border-style: dashed;
+      border-color: rgba(105, 91, 86, 0.2);
+      color: #a29a97;
+      font-size: 24px;
+    }
+
+    .tray-action {
+      width: 46px;
+      min-width: 46px;
+      height: 46px;
+      min-height: 46px;
+      margin-left: 9px;
+      border-radius: 16px;
+      background: rgba(255, 255, 255, 0.72);
+    }
+
+    .tray-action.is-active {
+      background: #6f5b5f;
+      color: white;
+    }
+
+    .fab-layer {
+      position: absolute;
+      z-index: 45;
+      inset: 0;
+      pointer-events: none;
+    }
+
+    .fab,
+    .radial-action {
+      position: absolute;
+      display: grid;
+      padding: 0;
+      place-items: center;
+      border-radius: 50%;
+      cursor: pointer;
+      user-select: none;
+      -webkit-user-select: none;
+      pointer-events: auto;
+    }
+
+    .fab {
+      z-index: 4;
+      width: 62px;
+      height: 62px;
+      border: 1px solid rgba(88, 72, 76, 0.18);
+      background: rgba(111, 91, 95, 0.94);
+      color: white;
+      box-shadow: 0 15px 34px rgba(65, 50, 54, 0.24);
+      touch-action: none;
+      transition: box-shadow 160ms ease, transform 140ms ease, background 160ms ease;
+    }
+
+    .fab:hover {
+      background: #675357;
+      box-shadow: 0 17px 38px rgba(65, 50, 54, 0.28);
+    }
+
+    .fab:active,
+    .fab.is-dragging {
+      transform: scale(0.96);
+      box-shadow: 0 10px 26px rgba(65, 50, 54, 0.2);
+    }
+
+    .fab .icon {
+      width: 25px;
+      height: 25px;
+      transition: transform 220ms var(--ease-out);
+    }
+
+    .fab[aria-expanded="true"] .icon {
+      transform: rotate(45deg);
+    }
+
+    .radial-action {
+      z-index: 2;
+      width: 54px;
+      height: 54px;
+      visibility: hidden;
+      border: 1px solid rgba(88, 72, 76, 0.13);
+      background: rgba(248, 243, 241, 0.9);
+      color: #5d5052;
+      box-shadow: 0 10px 28px rgba(65, 50, 54, 0.11);
+      opacity: 0;
+      transform: scale(0.56);
+      backdrop-filter: blur(14px) saturate(0.88);
+      transition:
+        left 230ms var(--ease-out),
+        top 230ms var(--ease-out),
+        opacity 140ms ease,
+        transform 200ms var(--ease-out),
+        visibility 0s linear 230ms,
+        background 150ms ease;
+    }
+
+    .radial-action.is-visible {
+      visibility: visible;
+      opacity: 1;
+      transform: scale(1);
+      transition-delay: var(--delay, 0ms), var(--delay, 0ms), var(--delay, 0ms), var(--delay, 0ms), 0s, 0s;
+    }
+
+    .radial-action:hover {
+      background: rgba(255, 255, 255, 0.98);
+    }
+
+    .radial-action .icon {
+      width: 20px;
+      height: 20px;
+      transform: translateY(-5px);
+    }
+
+    .radial-label {
+      position: absolute;
+      right: -12px;
+      bottom: 7px;
+      left: -12px;
+      color: #5d5052;
+      font-size: 10px;
+      font-weight: 600;
+      letter-spacing: 0.04em;
+      text-align: center;
+    }
+
+    .backdrop {
+      position: absolute;
+      z-index: 55;
+      inset: 0;
+      visibility: hidden;
+      background: rgba(56, 49, 47, 0.14);
+      opacity: 0;
+      backdrop-filter: blur(2px);
+      transition: opacity 180ms ease, visibility 0s linear 220ms;
+    }
+
+    .backdrop.is-open {
+      visibility: visible;
+      opacity: 1;
+      transition-delay: 0s;
+    }
+
+    .mock-sheet {
+      position: absolute;
+      z-index: 60;
+      right: 12px;
+      bottom: max(12px, env(safe-area-inset-bottom, 12px));
+      left: 12px;
+      visibility: hidden;
+      padding: 10px 18px 18px;
+      border: 1px solid rgba(81, 70, 66, 0.12);
+      border-radius: 28px;
+      background: rgba(252, 251, 249, 0.96);
+      box-shadow: 0 24px 70px rgba(51, 44, 42, 0.22);
+      opacity: 0;
+      transform: translateY(28px);
+      backdrop-filter: blur(24px);
+      transition: opacity 180ms ease, transform 260ms var(--ease-out), visibility 0s linear 260ms;
+    }
+
+    .mock-sheet.is-open {
+      visibility: visible;
+      opacity: 1;
+      transform: translateY(0);
+      transition-delay: 0s;
+    }
+
+    .sheet-handle {
+      width: 38px;
+      height: 4px;
+      margin: 0 auto 18px;
+      border-radius: 999px;
+      background: #d9d3d0;
+    }
+
+    .mock-sheet h2 {
+      margin: 0 0 7px;
+      font-size: 19px;
+      font-weight: 600;
+    }
+
+    .mock-sheet p {
+      margin: 0 0 18px;
+      color: var(--ink-soft);
+      font-size: 13px;
+      line-height: 1.65;
+    }
+
+    .sheet-actions {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 10px;
+    }
+
+    .sheet-button {
+      min-height: 48px;
+      border: 1px solid var(--line);
+      border-radius: 16px;
+      background: #f3efec;
+      cursor: pointer;
+    }
+
+    .sheet-button.primary {
+      border-color: transparent;
+      background: #6f5b5f;
+      color: white;
+    }
+
+    .toast {
+      position: absolute;
+      z-index: 80;
+      top: max(16px, env(safe-area-inset-top, 16px));
+      left: 50%;
+      max-width: calc(100% - 40px);
+      padding: 10px 15px;
+      visibility: hidden;
+      border: 1px solid rgba(255, 255, 255, 0.18);
+      border-radius: 999px;
+      background: rgba(53, 48, 47, 0.88);
+      color: white;
+      box-shadow: 0 10px 28px rgba(52, 45, 42, 0.16);
+      font-size: 12px;
+      white-space: nowrap;
+      opacity: 0;
+      transform: translate(-50%, -8px);
+      backdrop-filter: blur(12px);
+      transition: opacity 160ms ease, transform 200ms var(--ease-out), visibility 0s linear 220ms;
+    }
+
+    .toast.is-visible {
+      visibility: visible;
+      opacity: 1;
+      transform: translate(-50%, 0);
+      transition-delay: 0s;
+    }
+
+    .sr-only {
+      position: absolute;
+      width: 1px;
+      height: 1px;
+      padding: 0;
+      overflow: hidden;
+      clip: rect(0, 0, 0, 0);
+      white-space: nowrap;
+      border: 0;
+    }
+
+    :focus-visible {
+      outline: 3px solid rgba(118, 96, 100, 0.48);
+      outline-offset: 3px;
+    }
+
+    @media (min-width: 520px) {
+      .wardrobe-app {
+        height: min(900px, calc(100dvh - 32px));
+        border: 1px solid rgba(88, 72, 76, 0.1);
+        border-radius: 34px;
+        box-shadow: 0 30px 90px rgba(52, 45, 42, 0.16);
+      }
+    }
+
+    @media (max-height: 650px) {
+      .top-row {
+        min-height: 56px;
+      }
+
+      .avatar-switcher {
+        height: 50px;
+      }
+
+      .avatar-button {
+        width: 40px;
+        height: 40px;
+        flex-basis: 40px;
+      }
+
+      .category-bar {
+        min-height: 56px;
+      }
+
+      .outfit-tray {
+        min-height: 96px;
+      }
+
+      .outfit-thumb,
+      .outfit-slot {
+        width: 62px;
+        height: 70px;
+        flex-basis: 62px;
+      }
+    }
+
+    @media (prefers-reduced-motion: reduce) {
+      *,
+      *::before,
+      *::after {
+        scroll-behavior: auto !important;
+        transition-duration: 0.01ms !important;
+        animation-duration: 0.01ms !important;
+        animation-iteration-count: 1 !important;
+      }
+    }
+  </style>
+</head>
+<body>
+  <div class="stage">
+    <section class="wardrobe-app" id="app" aria-label="Outfit Manager DOM 原型">
+      <header class="app-header" id="appHeader">
+        <div class="top-row">
+          <div class="avatar-switcher" role="group" aria-label="切换穿搭目标">
+            <button class="avatar-button is-active" type="button" data-target="user" aria-label="切换到 User" aria-pressed="true">
+              <svg viewBox="0 0 48 48" role="img" aria-label="User 头像">
+                <defs><linearGradient id="userBg" x1="0" y1="0" x2="1" y2="1"><stop stop-color="#eadfdb"/><stop offset="1" stop-color="#c9b8b4"/></linearGradient></defs>
+                <rect width="48" height="48" fill="url(#userBg)"/>
+                <circle cx="24" cy="19" r="9" fill="#f5ede7"/>
+                <path d="M8 48c1-12 7-18 16-18s15 6 16 18" fill="#6d6061"/>
+                <path d="M14 18c1-9 5-13 11-13 7 0 11 5 11 14-5-2-8-6-10-10-2 5-6 8-12 9Z" fill="#4d4546"/>
+              </svg>
+            </button>
+            <button class="avatar-button" type="button" data-target="char" aria-label="切换到 Char" aria-pressed="false">
+              <svg viewBox="0 0 48 48" role="img" aria-label="Char 头像">
+                <defs><linearGradient id="charBg" x1="0" y1="0" x2="1" y2="1"><stop stop-color="#dde7e5"/><stop offset="1" stop-color="#aebfbd"/></linearGradient></defs>
+                <rect width="48" height="48" fill="url(#charBg)"/>
+                <circle cx="24" cy="19" r="9" fill="#f5eee8"/>
+                <path d="M7 48c2-12 8-18 17-18s15 6 17 18" fill="#516361"/>
+                <path d="M13 20c0-10 4-15 12-15 6 0 10 5 10 14-4-2-7-6-8-10-3 5-7 9-14 11Z" fill="#775f58"/>
+              </svg>
+            </button>
+            <span class="avatar-target" id="avatarTarget">USER</span>
+          </div>
+
+          <div class="top-actions">
+            <button class="icon-button" id="searchToggle" type="button" aria-label="打开搜索" aria-expanded="false" aria-controls="searchPanel">
+              <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><circle cx="10.8" cy="10.8" r="6.8"/><path d="m16 16 4.2 4.2"/></svg>
+            </button>
+            <button class="icon-button" id="selectToggle" type="button" aria-label="开启选择模式" aria-pressed="false">
+              <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M8 3H5a2 2 0 0 0-2 2v3M16 3h3a2 2 0 0 1 2 2v3M8 21H5a2 2 0 0 1-2-2v-3M16 21h3a2 2 0 0 0 2-2v-3" stroke-dasharray="3 2"/></svg>
+            </button>
+          </div>
+        </div>
+
+        <div class="search-panel" id="searchPanel">
+          <div class="search-panel-inner">
+            <div class="search-field-wrap">
+              <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><circle cx="10.8" cy="10.8" r="6.8"/><path d="m16 16 4.2 4.2"/></svg>
+              <label class="sr-only" for="searchInput">搜索衣物</label>
+              <input class="search-field" id="searchInput" type="search" autocomplete="off" placeholder="搜索衣物或分类">
+              <button class="clear-search" id="clearSearch" type="button" aria-label="清空搜索">×</button>
+            </div>
+          </div>
+        </div>
+      </header>
+
+      <nav class="category-bar" id="categoryBar" aria-label="衣物分类">
+        <div class="category-scroller" id="categoryScroller"></div>
+        <button class="expand-button" id="categoryToggle" type="button" aria-label="展开全部分类" aria-expanded="false" aria-controls="categoryPanel">
+          <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="m7 9.5 5 5 5-5"/></svg>
+        </button>
+      </nav>
+
+      <aside class="category-panel" id="categoryPanel" aria-label="全部分类">
+        <div class="category-panel-head">
+          <h2 class="category-panel-title">全部分类</h2>
+          <span class="category-panel-copy">选择后自动收起</span>
+        </div>
+        <div class="category-grid" id="categoryGrid"></div>
+      </aside>
+
+      <main class="content-scroll" id="contentScroll" tabindex="-1">
+        <div class="context-row">
+          <span class="mode-label"><span class="mode-dot" aria-hidden="true"></span><span id="modeLabel">衣柜浏览</span></span>
+          <span class="result-count" id="resultCount">12 件</span>
+        </div>
+        <div class="wardrobe-grid" id="wardrobeGrid" aria-label="衣物网格">
+          <div class="empty-result" id="emptyResult">没有找到对应的衣物<br>换个关键词或分类试试吧</div>
+        </div>
+      </main>
+
+      <div class="fab-layer" id="fabLayer" aria-label="快捷操作">
+        <button class="radial-action" id="modeAction" type="button" aria-label="切换到单品模式" style="--delay: 0ms">
+          <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M8.2 5.1 12 3l3.8 2.1 3.7 1.2-1.6 4.1-2.4-.9V21h-7V9.5l-2.4.9-1.6-4.1 3.7-1.2Z"/></svg>
+          <span class="radial-label" id="modeActionLabel">单品</span>
+        </button>
+        <button class="radial-action" id="pairAction" type="button" aria-label="进入搭配模式" style="--delay: 35ms">
+          <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M8.5 4.5a3.5 3.5 0 1 0 0 7h7a3.5 3.5 0 1 0 0-7h-7ZM8.5 12.5a3.5 3.5 0 1 0 0 7h7a3.5 3.5 0 1 0 0-7h-7Z"/></svg>
+          <span class="radial-label">搭配</span>
+        </button>
+        <button class="radial-action" id="importAction" type="button" aria-label="打开导入演示" style="--delay: 70ms">
+          <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3v12m0 0 4-4m-4 4-4-4M5 19h14"/></svg>
+          <span class="radial-label">导入</span>
+        </button>
+        <button class="fab" id="fab" type="button" aria-label="展开快捷操作，可拖动" aria-expanded="false">
+          <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg>
+        </button>
+      </div>
+
+      <aside class="outfit-tray" id="outfitTray" aria-label="当前穿搭">
+        <div class="outfit-thumbs" id="outfitThumbs"></div>
+        <button class="tray-action" id="pairDone" type="button" aria-label="完成搭配">
+          <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="m5 12.5 4.5 4.5L19 7.5"/></svg>
+        </button>
+      </aside>
+
+      <div class="backdrop" id="backdrop"></div>
+      <section class="mock-sheet" id="importSheet" role="dialog" aria-modal="true" aria-labelledby="importTitle" aria-describedby="importCopy">
+        <div class="sheet-handle" aria-hidden="true"></div>
+        <h2 id="importTitle">导入衣物</h2>
+        <p id="importCopy">这是 DOM 原型反馈，不会读取文件、调用接口或写入真实衣柜。</p>
+        <div class="sheet-actions">
+          <button class="sheet-button" id="cancelImport" type="button">取消</button>
+          <button class="sheet-button primary" id="mockImport" type="button">模拟选择</button>
+        </div>
+      </section>
+
+      <div class="toast" id="toast" role="status" aria-live="polite"></div>
+    </section>
+  </div>
+
+  <script>
+    (() => {
+      'use strict';
+
+      const icons = {
+        check: '<svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="m5 12.5 4.5 4.5L19 7.5"/></svg>'
+      };
+
+      const categories = ['全部', '上装', '下装', '连衣裙', '外套', '鞋履', '配饰', '包袋', '居家'];
+      const items = [
+        { id: 1, name: '燕麦针织上衣', category: '上装', kind: 'top', color: '#b7a69c', accent: '#e9dfd9', bg: '#eee9e5' },
+        { id: 2, name: '雾蓝衬衫', category: '上装', kind: 'shirt', color: '#9eadb2', accent: '#dce5e7', bg: '#e8edef' },
+        { id: 3, name: '柔灰百褶裙', category: '下装', kind: 'skirt', color: '#8f8b89', accent: '#d6d1ce', bg: '#e9e6e3' },
+        { id: 4, name: '藕粉连衣裙', category: '连衣裙', kind: 'dress', color: '#b98f91', accent: '#ead3d2', bg: '#f0e7e5' },
+        { id: 5, name: '砂岩阔腿裤', category: '下装', kind: 'pants', color: '#807a70', accent: '#cfc8bd', bg: '#e8e4dd' },
+        { id: 6, name: '奶油短外套', category: '外套', kind: 'coat', color: '#c2b39e', accent: '#ece3d7', bg: '#eee9e2' },
+        { id: 7, name: '烟灰乐福鞋', category: '鞋履', kind: 'shoes', color: '#625d5b', accent: '#c4bebb', bg: '#e6e3e1' },
+        { id: 8, name: '杏色托特包', category: '包袋', kind: 'bag', color: '#ad9278', accent: '#dfd0bf', bg: '#ede6de' },
+        { id: 9, name: '鼠尾草针织', category: '上装', kind: 'top', color: '#89988c', accent: '#d0dbd2', bg: '#e7ece8' },
+        { id: 10, name: '暮紫长裙', category: '连衣裙', kind: 'dress', color: '#82757f', accent: '#d8cfd6', bg: '#eae5e9' },
+        { id: 11, name: '浅卡其风衣', category: '外套', kind: 'coat', color: '#9c8e7b', accent: '#dbd0c1', bg: '#e9e4dc' },
+        { id: 12, name: '珍珠耳饰', category: '配饰', kind: 'jewelry', color: '#b8aaa2', accent: '#f4eee9', bg: '#ece7e3' },
+        { id: 13, name: '雾粉家居服', category: '居家', kind: 'shirt', color: '#b79d9c', accent: '#eadbd9', bg: '#f0e9e7' },
+        { id: 14, name: '岩灰小包', category: '包袋', kind: 'bag', color: '#746c68', accent: '#cec6c1', bg: '#e7e3e0' },
+        { id: 15, name: '奶咖短靴', category: '鞋履', kind: 'shoes', color: '#8e7667', accent: '#d7c7bd', bg: '#ebe3dd' }
+      ];
+
+      const state = {
+        target: 'user',
+        category: '全部',
+        mode: 'wardrobe',
+        pairing: false,
+        selectionMode: false,
+        selected: new Set([1, 4]),
+        query: '',
+        menuOpen: false,
+        toastTimer: 0,
+        fab: { x: 0, y: 0, initialized: false }
+      };
+
+      const el = {
+        app: document.querySelector('#app'),
+        header: document.querySelector('#appHeader'),
+        categoryBar: document.querySelector('#categoryBar'),
+        categoryScroller: document.querySelector('#categoryScroller'),
+        categoryGrid: document.querySelector('#categoryGrid'),
+        categoryToggle: document.querySelector('#categoryToggle'),
+        categoryPanel: document.querySelector('#categoryPanel'),
+        contentScroll: document.querySelector('#contentScroll'),
+        wardrobeGrid: document.querySelector('#wardrobeGrid'),
+        emptyResult: document.querySelector('#emptyResult'),
+        resultCount: document.querySelector('#resultCount'),
+        modeLabel: document.querySelector('#modeLabel'),
+        modeAction: document.querySelector('#modeAction'),
+        modeActionLabel: document.querySelector('#modeActionLabel'),
+        pairAction: document.querySelector('#pairAction'),
+        importAction: document.querySelector('#importAction'),
+        fab: document.querySelector('#fab'),
+        fabLayer: document.querySelector('#fabLayer'),
+        outfitTray: document.querySelector('#outfitTray'),
+        outfitThumbs: document.querySelector('#outfitThumbs'),
+        pairDone: document.querySelector('#pairDone'),
+        searchToggle: document.querySelector('#searchToggle'),
+        searchPanel: document.querySelector('#searchPanel'),
+        searchInput: document.querySelector('#searchInput'),
+        clearSearch: document.querySelector('#clearSearch'),
+        selectToggle: document.querySelector('#selectToggle'),
+        avatarTarget: document.querySelector('#avatarTarget'),
+        backdrop: document.querySelector('#backdrop'),
+        importSheet: document.querySelector('#importSheet'),
+        cancelImport: document.querySelector('#cancelImport'),
+        mockImport: document.querySelector('#mockImport'),
+        toast: document.querySelector('#toast')
+      };
+
+      function garmentShape(item) {
+        const common = `fill="${item.color}" stroke="rgba(54,48,46,.22)" stroke-width="1" stroke-linejoin="round"`;
+        const detail = `fill="none" stroke="${item.accent}" stroke-width="1.6" stroke-linecap="round" opacity=".8"`;
+        switch (item.kind) {
+          case 'top':
+            return `<path ${common} d="M31 35 49 25l12 12-8 12-6-4v51H23V45l-6 4-8-12 12-12 10 10Z"/><path ${detail} d="M31 35c5 7 11 7 16 0M35 48v38"/>`;
+          case 'shirt':
+            return `<path ${common} d="m27 29 13-7 13 7 13 6-7 15-7-4v52H28V46l-7 4-7-15 13-6Z"/><path ${detail} d="m33 26 7 10 7-10M40 36v58M36 52h8"/>`;
+          case 'skirt':
+            return `<path ${common} d="M25 28h30l9 68H16l9-68Z"/><path ${detail} d="M25 37h30M31 40l-5 48M40 40v48M49 40l5 48"/>`;
+          case 'dress':
+            return `<path ${common} d="m31 24 9 7 9-7 8 8-10 21 17 48H16l17-48-10-21 8-8Z"/><path ${detail} d="M33 31c1 9 13 9 14 0M27 68h26"/>`;
+          case 'pants':
+            return `<path ${common} d="M24 25h32l5 73H44l-4-46-4 46H19l5-73Z"/><path ${detail} d="M24 36h32M40 36v16"/>`;
+          case 'coat':
+            return `<path ${common} d="m26 28 14-7 14 7 12 12-8 14-7-5 6 56H23l6-56-7 5-8-14 12-12Z"/><path ${detail} d="m33 26 7 16 7-16M40 42v54M31 58h5M44 58h5"/>`;
+          case 'shoes':
+            return `<path ${common} d="M12 67c10 0 15-12 19-25h12c0 10 1 18 8 22 5 3 12 2 17 6l-2 12H13L12 67Z"/><path ${detail} d="M14 72h52M28 55h16"/>`;
+          case 'bag':
+            return `<rect ${common} x="16" y="43" width="48" height="49" rx="7"/><path ${detail} d="M27 44v-7c0-18 26-18 26 0v7M20 58h40"/>`;
+          case 'jewelry':
+            return `<circle cx="29" cy="59" r="13" ${common}/><circle cx="53" cy="59" r="13" ${common}/><path ${detail} d="M29 46V32M53 46V32"/><circle cx="29" cy="28" r="4" fill="${item.accent}"/><circle cx="53" cy="28" r="4" fill="${item.accent}"/>`;
+          default:
+            return `<circle cx="40" cy="60" r="24" ${common}/>`;
+        }
+      }
+
+      function garmentSvg(item) {
+        return `<svg viewBox="0 0 80 120" role="img" aria-label="${item.name}" preserveAspectRatio="xMidYMid meet">
+          <defs>
+            <linearGradient id="bg-${item.id}" x1="0" y1="0" x2="1" y2="1"><stop stop-color="${item.bg}"/><stop offset="1" stop-color="${item.accent}" stop-opacity=".45"/></linearGradient>
+            <filter id="shadow-${item.id}" x="-20%" y="-20%" width="140%" height="150%"><feDropShadow dx="0" dy="3" stdDeviation="3" flood-color="#39302e" flood-opacity=".12"/></filter>
+          </defs>
+          <rect width="80" height="120" fill="url(#bg-${item.id})"/>
+          <ellipse cx="40" cy="105" rx="24" ry="5" fill="#655b57" opacity=".08"/>
+          <g filter="url(#shadow-${item.id})">${garmentShape(item)}</g>
+        </svg>`;
+      }
+
+      function renderCategories() {
+        const makeChip = category => `<button class="category-chip${state.category === category ? ' is-active' : ''}" type="button" data-category="${category}" aria-pressed="${state.category === category}">${category}</button>`;
+        el.categoryScroller.innerHTML = categories.slice(0, 6).map(makeChip).join('');
+        el.categoryGrid.innerHTML = categories.map(makeChip).join('');
+      }
+
+      function visibleItems() {
+        const query = state.query.trim().toLocaleLowerCase('zh-CN');
+        return items.filter(item => {
+          const categoryMatch = state.category === '全部' || item.category === state.category;
+          const queryMatch = !query || `${item.name} ${item.category}`.toLocaleLowerCase('zh-CN').includes(query);
+          return categoryMatch && queryMatch;
+        });
+      }
+
+      function renderGrid() {
+        const visibleIds = new Set(visibleItems().map(item => item.id));
+        const cards = items.map(item => {
+          const selected = state.selected.has(item.id);
+          const filtered = !visibleIds.has(item.id);
+          return `<button class="card${selected ? ' is-selected' : ''}${filtered ? ' is-filtered' : ''}" type="button" data-item-id="${item.id}" aria-label="${item.name}，${selected ? '已加入当前穿搭' : '未选择'}" aria-pressed="${selected}" style="--card-bg:${item.bg}">
+            <span class="card-visual">${garmentSvg(item)}</span>
+            <span class="card-check" aria-hidden="true">${icons.check}</span>
+          </button>`;
+        }).join('');
+        el.wardrobeGrid.insertAdjacentHTML('afterbegin', cards);
+        el.emptyResult.classList.toggle('is-visible', visibleIds.size === 0);
+        el.resultCount.textContent = `${visibleIds.size} 件`;
+      }
+
+      function refreshGrid() {
+        el.wardrobeGrid.querySelectorAll('.card').forEach(card => card.remove());
+        renderGrid();
+      }
+
+      function renderTray() {
+        const selectedItems = items.filter(item => state.selected.has(item.id));
+        const slots = state.pairing ? Math.max(0, 4 - selectedItems.length) : 0;
+        el.outfitThumbs.innerHTML = selectedItems.map(item => `<button class="outfit-thumb" type="button" data-remove-id="${item.id}" aria-label="从当前穿搭移除${item.name}">${garmentSvg(item)}</button>`).join('') +
+          Array.from({ length: slots }, (_, index) => `<span class="outfit-slot" aria-label="空搭配位 ${index + 1}">+</span>`).join('');
+        el.outfitTray.classList.toggle('is-visible', selectedItems.length > 0 || state.pairing);
+        el.pairDone.classList.toggle('is-active', state.pairing);
+        el.pairDone.setAttribute('aria-label', state.pairing ? '完成搭配' : '进入搭配模式');
+        requestAnimationFrame(initializeFab);
+      }
+
+      function renderMode() {
+        const baseLabel = state.mode === 'wardrobe' ? '衣柜浏览' : '单品挑选';
+        el.modeLabel.textContent = state.pairing ? `${baseLabel} · 搭配中` : baseLabel;
+        el.modeActionLabel.textContent = state.mode === 'wardrobe' ? '单品' : '衣柜';
+        el.modeAction.setAttribute('aria-label', `切换到${state.mode === 'wardrobe' ? '单品' : '衣柜'}模式`);
+        el.pairAction.setAttribute('aria-label', state.pairing ? '退出搭配模式' : '进入搭配模式');
+        el.pairAction.querySelector('.radial-label').textContent = state.pairing ? '退出' : '搭配';
+      }
+
+      function renderSelectionMode() {
+        el.app.classList.toggle('selection-mode', state.selectionMode);
+        el.selectToggle.setAttribute('aria-pressed', String(state.selectionMode));
+        el.selectToggle.setAttribute('aria-label', state.selectionMode ? '关闭选择模式' : '开启选择模式');
+      }
+
+      function setCategory(category) {
+        state.category = category;
+        renderCategories();
+        refreshGrid();
+        setCategoryPanel(false);
+        showToast(`已筛选：${category}`);
+      }
+
+      function setCategoryPanel(open) {
+        el.categoryPanel.classList.toggle('is-open', open);
+        el.categoryToggle.setAttribute('aria-expanded', String(open));
+        el.categoryToggle.setAttribute('aria-label', open ? '收起全部分类' : '展开全部分类');
+      }
+
+      function setSearch(open) {
+        el.searchPanel.classList.toggle('is-open', open);
+        el.searchToggle.setAttribute('aria-expanded', String(open));
+        el.searchToggle.setAttribute('aria-label', open ? '关闭搜索' : '打开搜索');
+        requestAnimationFrame(updateChromeMetrics);
+        if (open) setTimeout(() => el.searchInput.focus(), 180);
+      }
+
+      function toggleItem(id) {
+        const item = items.find(entry => entry.id === id);
+        if (!item) return;
+        if (state.selected.has(id)) {
+          state.selected.delete(id);
+          showToast(`已移除 ${item.name}`);
+        } else {
+          state.selected.add(id);
+          showToast(`已加入 ${item.name}`);
+        }
+        refreshGrid();
+        renderTray();
+      }
+
+      function setPairing(active) {
+        state.pairing = active;
+        if (active) state.selectionMode = true;
+        renderMode();
+        renderSelectionMode();
+        renderTray();
+        setFabMenu(false);
+        showToast(active ? '进入搭配模式' : '搭配已收起');
+      }
+
+      function setFabMenu(open) {
+        state.menuOpen = open;
+        el.fab.setAttribute('aria-expanded', String(open));
+        el.fab.setAttribute('aria-label', open ? '收起快捷操作，可拖动' : '展开快捷操作，可拖动');
+        [el.modeAction, el.pairAction, el.importAction].forEach(action => action.classList.toggle('is-visible', open));
+        positionRadialActions(open);
+      }
+
+      function getFabBounds() {
+        const appRect = el.app.getBoundingClientRect();
+        const fabSize = el.fab.offsetWidth || 62;
+        const pad = 12;
+        const trayClearance = el.outfitTray.classList.contains('is-visible') ? el.outfitTray.offsetHeight + 22 : Math.max(20, parseFloat(getComputedStyle(el.app).paddingBottom || 0));
+        return {
+          minX: pad,
+          maxX: appRect.width - fabSize - pad,
+          minY: Math.max(el.categoryBar.offsetTop + el.categoryBar.offsetHeight + 8, pad),
+          maxY: appRect.height - fabSize - trayClearance,
+          width: appRect.width,
+          height: appRect.height,
+          fabSize
+        };
+      }
+
+      function clampFab() {
+        const bounds = getFabBounds();
+        state.fab.x = Math.min(bounds.maxX, Math.max(bounds.minX, state.fab.x));
+        state.fab.y = Math.min(bounds.maxY, Math.max(bounds.minY, state.fab.y));
+        el.fab.style.left = `${state.fab.x}px`;
+        el.fab.style.top = `${state.fab.y}px`;
+      }
+
+      function initializeFab() {
+        const bounds = getFabBounds();
+        if (!state.fab.initialized) {
+          state.fab.x = bounds.maxX - 3;
+          state.fab.y = Math.max(bounds.minY, bounds.height * 0.56);
+          state.fab.initialized = true;
+        }
+        clampFab();
+        positionRadialActions(state.menuOpen);
+      }
+
+      function positionRadialActions(open) {
+        const bounds = getFabBounds();
+        const fabCenter = { x: state.fab.x + bounds.fabSize / 2, y: state.fab.y + bounds.fabSize / 2 };
+        const horizontal = fabCenter.x > bounds.width / 2 ? -1 : 1;
+        const vertical = fabCenter.y > bounds.height / 2 ? -1 : 1;
+        const directions = [
+          { x: 0, y: vertical },
+          { x: horizontal * 0.72, y: vertical * 0.72 },
+          { x: horizontal, y: 0 }
+        ];
+        const actions = [el.modeAction, el.pairAction, el.importAction];
+        let radius = 92;
+        const actionSize = 54;
+        const safe = 10;
+
+        while (radius > 68) {
+          const fits = directions.every(direction => {
+            const left = fabCenter.x - actionSize / 2 + direction.x * radius;
+            const top = fabCenter.y - actionSize / 2 + direction.y * radius;
+            return left >= safe && left + actionSize <= bounds.width - safe && top >= bounds.minY - 6 && top + actionSize <= bounds.height - safe;
+          });
+          if (fits) break;
+          radius -= 4;
+        }
+
+        actions.forEach((action, index) => {
+          const direction = directions[index];
+          const left = open ? fabCenter.x - actionSize / 2 + direction.x * radius : fabCenter.x - actionSize / 2;
+          const top = open ? fabCenter.y - actionSize / 2 + direction.y * radius : fabCenter.y - actionSize / 2;
+          action.style.left = `${Math.min(bounds.width - actionSize - safe, Math.max(safe, left))}px`;
+          action.style.top = `${Math.min(bounds.height - actionSize - safe, Math.max(bounds.minY - 6, top))}px`;
+        });
+      }
+
+      function showImportSheet() {
+        setFabMenu(false);
+        el.backdrop.classList.add('is-open');
+        el.importSheet.classList.add('is-open');
+        setTimeout(() => el.cancelImport.focus(), 180);
+      }
+
+      function closeImportSheet() {
+        el.backdrop.classList.remove('is-open');
+        el.importSheet.classList.remove('is-open');
+        el.fab.focus();
+      }
+
+      function showToast(message) {
+        clearTimeout(state.toastTimer);
+        el.toast.textContent = message;
+        el.toast.classList.add('is-visible');
+        state.toastTimer = window.setTimeout(() => el.toast.classList.remove('is-visible'), 2100);
+      }
+
+      function updateChromeMetrics() {
+        const chromeHeight = el.header.offsetHeight + el.categoryBar.offsetHeight;
+        el.app.style.setProperty('--chrome-height', `${chromeHeight}px`);
+        el.app.style.setProperty('--category-bottom', `${chromeHeight}px`);
+        initializeFab();
+      }
+
+      function bindFabDrag() {
+        let pointerId = null;
+        let start = null;
+        let origin = null;
+        let dragged = false;
+
+        el.fab.addEventListener('pointerdown', event => {
+          if (event.button !== 0 && event.pointerType === 'mouse') return;
+          pointerId = event.pointerId;
+          start = { x: event.clientX, y: event.clientY };
+          origin = { x: state.fab.x, y: state.fab.y };
+          dragged = false;
+          el.fab.setPointerCapture(pointerId);
+          el.fab.classList.add('is-dragging');
+        });
+
+        el.fab.addEventListener('pointermove', event => {
+          if (event.pointerId !== pointerId || !start) return;
+          const dx = event.clientX - start.x;
+          const dy = event.clientY - start.y;
+          if (!dragged && Math.hypot(dx, dy) < 6) return;
+          dragged = true;
+          state.fab.x = origin.x + dx;
+          state.fab.y = origin.y + dy;
+          clampFab();
+          positionRadialActions(state.menuOpen);
+        });
+
+        const finish = event => {
+          if (event.pointerId !== pointerId) return;
+          el.fab.classList.remove('is-dragging');
+          if (el.fab.hasPointerCapture(pointerId)) el.fab.releasePointerCapture(pointerId);
+          if (!dragged) setFabMenu(!state.menuOpen);
+          pointerId = null;
+          start = null;
+          origin = null;
+          requestAnimationFrame(() => { dragged = false; });
+        };
+
+        el.fab.addEventListener('pointerup', finish);
+        el.fab.addEventListener('pointercancel', finish);
+        el.fab.addEventListener('keydown', event => {
+          const moves = { ArrowLeft: [-24, 0], ArrowRight: [24, 0], ArrowUp: [0, -24], ArrowDown: [0, 24] };
+          if (moves[event.key]) {
+            event.preventDefault();
+            state.fab.x += moves[event.key][0];
+            state.fab.y += moves[event.key][1];
+            clampFab();
+            positionRadialActions(state.menuOpen);
+          }
+        });
+        el.fab.addEventListener('click', event => {
+          if (event.detail === 0) setFabMenu(!state.menuOpen);
+        });
+      }
+
+      document.querySelectorAll('.avatar-button').forEach(button => {
+        button.addEventListener('click', () => {
+          state.target = button.dataset.target;
+          document.querySelectorAll('.avatar-button').forEach(candidate => {
+            const active = candidate === button;
+            candidate.classList.toggle('is-active', active);
+            candidate.setAttribute('aria-pressed', String(active));
+          });
+          el.avatarTarget.textContent = state.target.toUpperCase();
+          showToast(`已切换到 ${state.target === 'user' ? 'User' : 'Char'}`);
+        });
+      });
+
+      el.categoryScroller.addEventListener('click', event => {
+        const button = event.target.closest('[data-category]');
+        if (button) setCategory(button.dataset.category);
+      });
+
+      el.categoryGrid.addEventListener('click', event => {
+        const button = event.target.closest('[data-category]');
+        if (button) setCategory(button.dataset.category);
+      });
+
+      el.categoryToggle.addEventListener('click', () => setCategoryPanel(!el.categoryPanel.classList.contains('is-open')));
+      el.searchToggle.addEventListener('click', () => setSearch(!el.searchPanel.classList.contains('is-open')));
+      el.clearSearch.addEventListener('click', () => {
+        state.query = '';
+        el.searchInput.value = '';
+        refreshGrid();
+        el.searchInput.focus();
+      });
+      el.searchInput.addEventListener('input', () => {
+        state.query = el.searchInput.value;
+        refreshGrid();
+      });
+
+      el.selectToggle.addEventListener('click', () => {
+        state.selectionMode = !state.selectionMode;
+        renderSelectionMode();
+        showToast(state.selectionMode ? '选择模式已开启' : '选择模式已关闭');
+      });
+
+      el.wardrobeGrid.addEventListener('click', event => {
+        const card = event.target.closest('[data-item-id]');
+        if (card) toggleItem(Number(card.dataset.itemId));
+      });
+
+      el.outfitThumbs.addEventListener('click', event => {
+        const thumb = event.target.closest('[data-remove-id]');
+        if (thumb) toggleItem(Number(thumb.dataset.removeId));
+      });
+
+      el.modeAction.addEventListener('click', () => {
+        state.mode = state.mode === 'wardrobe' ? 'item' : 'wardrobe';
+        state.selectionMode = state.mode === 'item' || state.pairing;
+        renderMode();
+        renderSelectionMode();
+        setFabMenu(false);
+        showToast(state.mode === 'wardrobe' ? '已切换到衣柜模式' : '已切换到单品模式');
+      });
+      el.pairAction.addEventListener('click', () => setPairing(!state.pairing));
+      el.pairDone.addEventListener('click', () => setPairing(!state.pairing));
+      el.importAction.addEventListener('click', showImportSheet);
+      el.cancelImport.addEventListener('click', closeImportSheet);
+      el.backdrop.addEventListener('click', closeImportSheet);
+      el.mockImport.addEventListener('click', () => {
+        closeImportSheet();
+        showToast('已模拟选择 1 个文件（未写入）');
+      });
+
+      document.addEventListener('pointerdown', event => {
+        if (state.menuOpen && !event.target.closest('#fabLayer')) setFabMenu(false);
+        if (el.categoryPanel.classList.contains('is-open') && !event.target.closest('#categoryPanel') && !event.target.closest('#categoryToggle')) setCategoryPanel(false);
+      });
+
+      document.addEventListener('keydown', event => {
+        if (event.key !== 'Escape') return;
+        if (el.importSheet.classList.contains('is-open')) closeImportSheet();
+        else if (state.menuOpen) setFabMenu(false);
+        else if (el.categoryPanel.classList.contains('is-open')) setCategoryPanel(false);
+        else if (el.searchPanel.classList.contains('is-open')) setSearch(false);
+      });
+
+      window.addEventListener('resize', updateChromeMetrics);
+
+      renderCategories();
+      renderGrid();
+      renderMode();
+      renderSelectionMode();
+      renderTray();
+      bindFabDrag();
+      requestAnimationFrame(updateChromeMetrics);
+    })();
+  </script>
+</body>
+</html>
