@@ -785,26 +785,6 @@
       overscroll-behavior-inline: contain;
     }
 
-    .outfit-role-row.is-double {
-      align-items: start;
-    }
-
-    .outfit-role-items.is-double {
-      display: grid;
-      grid-template-rows: repeat(2, 64px);
-      grid-auto-flow: column;
-      grid-auto-columns: 58px;
-      gap: 7px;
-    }
-
-    .outfit-role-items.is-double .outfit-thumb,
-    .outfit-role-items.is-double .outfit-slot {
-      width: 58px;
-      height: 64px;
-      flex-basis: 58px;
-      border-radius: 15px;
-    }
-
     .outfit-thumb,
     .outfit-slot {
       position: relative;
@@ -910,16 +890,46 @@
       margin-left: 8px;
     }
 
-    .tray-expand {
-      color: #6c6160;
+    .tray-handle {
+      position: absolute;
+      z-index: 3;
+      top: -22px;
+      left: 50%;
+      display: none;
+      width: 72px;
+      height: 44px;
+      padding: 0;
+      border: 0;
+      background: transparent;
+      transform: translateX(-50%);
+      cursor: ns-resize;
+      touch-action: none;
     }
 
-    .tray-expand .icon {
-      transition: transform 220ms var(--ease-out);
+    .tray-handle.is-active {
+      display: grid;
+      place-items: end center;
     }
 
-    .tray-expand[aria-expanded="true"] .icon {
-      transform: rotate(180deg);
+    .tray-handle-line {
+      width: 40px;
+      height: 4px;
+      margin-bottom: 8px;
+      border-radius: 999px;
+      background: rgba(91, 82, 79, 0.6);
+      box-shadow: 0 1px 0 rgba(255, 255, 255, 0.68);
+      transition: width 160ms ease, background 160ms ease, transform 160ms ease;
+    }
+
+    .tray-handle:hover .tray-handle-line,
+    .tray-handle:focus-visible .tray-handle-line,
+    .tray-handle.is-dragging .tray-handle-line {
+      width: 48px;
+      background: rgba(91, 82, 79, 0.8);
+    }
+
+    .tray-handle.is-dragging .tray-handle-line {
+      transform: scaleY(1.15);
     }
 
     .fab-layer {
@@ -955,6 +965,14 @@
       stroke-dasharray: 62 42 24 70;
       stroke-linecap: round;
       vector-effect: non-scaling-stroke;
+    }
+
+    #orbitOuter {
+      stroke-dashoffset: 18;
+    }
+
+    #orbitInner {
+      stroke-dashoffset: -34;
     }
 
     .fab-layer[data-template="centerMiddle"] .orbit-lines ellipse {
@@ -1361,11 +1379,11 @@
       </div>
 
       <aside class="outfit-tray" id="outfitTray" aria-label="当前穿搭">
+        <button class="tray-handle" id="trayToggle" type="button" aria-label="展开穿搭托盘" aria-controls="outfitThumbs" aria-expanded="false">
+          <span class="tray-handle-line" aria-hidden="true"></span>
+        </button>
         <div class="outfit-canvas" id="outfitThumbs"></div>
         <div class="tray-controls">
-          <button class="tray-action tray-expand" id="trayToggle" type="button" aria-label="展开穿搭托盘" aria-controls="outfitThumbs" aria-expanded="false">
-            <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="m7 9.5 5 5 5-5"/></svg>
-          </button>
           <button class="tray-action" id="pairDone" type="button" aria-label="完成搭配">
             <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="m5 12.5 4.5 4.5L19 7.5"/></svg>
           </button>
@@ -1597,25 +1615,24 @@
         ].map(role => ({ ...role, itemIds: state.outfits[role.key] || [] }))
           .filter(role => role.itemIds.length || (state.pairing && role.key === currentOutfitKey()));
         const totalItems = roleEntries.reduce((total, role) => total + role.itemIds.length, 0);
-        const expanded = roleEntries.length > 2 || totalItems > 4 || roleEntries.some(role => role.itemIds.length > 2);
-        el.outfitThumbs.classList.toggle('is-compact', !expanded);
-        el.outfitTray.classList.toggle('is-expanded', expanded);
+        const grouped = roleEntries.length > 2 || roleEntries.some(role => role.itemIds.length > 1);
+        el.outfitThumbs.classList.toggle('is-compact', !grouped);
+        el.outfitTray.classList.toggle('is-expanded', grouped);
         el.outfitTray.classList.toggle('is-pairing', state.pairing);
 
-        if (!expanded) {
+        if (!grouped) {
           el.outfitThumbs.innerHTML = roleEntries.flatMap(role => role.itemIds.map(id => {
             const item = items.find(entry => entry.id === id);
             return item ? renderOutfitThumb(item, role.name, role.key) : '';
           })).join('') + (state.pairing && totalItems < 4 ? Array.from({ length: 4 - totalItems }, (_, index) => `<span class="outfit-slot" aria-label="空搭配位 ${index + 1}">+</span>`).join('') : '');
         } else {
           el.outfitThumbs.innerHTML = roleEntries.map(role => {
-            const doubleRow = role.itemIds.length > 2;
             const rowItems = role.itemIds.map(id => {
               const item = items.find(entry => entry.id === id);
               return item ? renderOutfitThumb(item, role.name, role.key) : '';
             }).join('');
             const slots = state.pairing && role.key === currentOutfitKey() ? Array.from({ length: Math.max(0, 4 - role.itemIds.length) }, (_, index) => `<span class="outfit-slot" aria-label="${role.name} 的空搭配位 ${index + 1}">+</span>`).join('') : '';
-            return `<section class="outfit-role-row${doubleRow ? ' is-double' : ''}" aria-label="${role.name} 的当前穿搭"><span class="outfit-role-label">${role.name}</span><div class="outfit-role-items${doubleRow ? ' is-double' : ''}">${rowItems}${slots}</div></section>`;
+            return `<section class="outfit-role-row" aria-label="${role.name} 的当前穿搭"><span class="outfit-role-label">${role.name}</span><div class="outfit-role-items">${rowItems}${slots}</div></section>`;
           }).join('');
         }
 
@@ -1640,8 +1657,15 @@
         el.outfitTray.classList.toggle('is-user-expanded', state.trayExpanded);
         el.trayToggle.classList.toggle('is-active', canExpand);
         el.trayToggle.setAttribute('aria-expanded', String(state.trayExpanded));
-        el.trayToggle.setAttribute('aria-label', state.trayExpanded ? '收起穿搭托盘' : '展开穿搭托盘，可继续向下滚动');
+        el.trayToggle.setAttribute('aria-label', state.trayExpanded ? '向下拖动或点击以收起穿搭托盘' : '向上拖动或点击以展开穿搭托盘');
         initializeFab();
+      }
+
+      function setTrayExpanded(expanded) {
+        if (expanded && !el.trayToggle.classList.contains('is-active')) return;
+        state.trayExpanded = expanded;
+        if (!expanded) el.outfitThumbs.scrollTo({ top: 0, behavior: 'smooth' });
+        updateTrayHeight();
       }
 
       function renderMode() {
@@ -1985,14 +2009,14 @@
         const innerPlanets = layout.filter(planet => planet.key === 'pair' || planet.key === 'mode');
         const innerX = Math.max(62, ...innerPlanets.map(planet => Math.abs(planet.centerX - fabCenter.x) + 12));
         const innerY = Math.max(58, ...innerPlanets.map(planet => Math.abs(planet.centerY - fabCenter.y) + 12));
-        const edgeShift = templateName.startsWith('right') ? -26 : templateName.startsWith('left') ? 26 : 0;
         const tilt = templateName.startsWith('right') ? 14 : templateName.startsWith('left') ? -14 : templateName === 'centerMiddle' ? 12 : 0;
-        [[el.orbitOuter, outerX + (edgeShift ? 12 : 0), outerY + (edgeShift ? 18 : 0), tilt, edgeShift], [el.orbitInner, innerX, innerY, -tilt * 0.5, edgeShift * 0.42]].forEach(([orbit, radiusX, radiusY, rotation, centerShift]) => {
-          orbit.setAttribute('cx', fabCenter.x + centerShift);
+        const edgeTemplate = templateName.startsWith('right') || templateName.startsWith('left');
+        [[el.orbitOuter, outerX + (edgeTemplate ? 12 : 0), outerY + (edgeTemplate ? 18 : 0), tilt], [el.orbitInner, innerX, innerY, -tilt * 0.5]].forEach(([orbit, radiusX, radiusY, rotation]) => {
+          orbit.setAttribute('cx', fabCenter.x);
           orbit.setAttribute('cy', fabCenter.y);
           orbit.setAttribute('rx', radiusX);
           orbit.setAttribute('ry', radiusY);
-          orbit.setAttribute('transform', `rotate(${rotation} ${fabCenter.x + centerShift} ${fabCenter.y})`);
+          orbit.setAttribute('transform', `rotate(${rotation} ${fabCenter.x} ${fabCenter.y})`);
         });
       }
 
@@ -2083,6 +2107,51 @@
         });
       }
 
+      function bindTrayHandle() {
+        let pointerId = null;
+        let startY = 0;
+        let dragged = false;
+        let suppressClick = false;
+
+        el.trayToggle.addEventListener('pointerdown', event => {
+          if (event.button !== 0 && event.pointerType === 'mouse') return;
+          pointerId = event.pointerId;
+          startY = event.clientY;
+          dragged = false;
+          el.trayToggle.setPointerCapture(pointerId);
+          el.trayToggle.classList.add('is-dragging');
+        });
+
+        el.trayToggle.addEventListener('pointermove', event => {
+          if (event.pointerId !== pointerId) return;
+          const deltaY = event.clientY - startY;
+          if (Math.abs(deltaY) < 18) return;
+          event.preventDefault();
+          dragged = true;
+          const shouldExpand = deltaY < 0;
+          if (shouldExpand !== state.trayExpanded) setTrayExpanded(shouldExpand);
+        });
+
+        const finishTrayGesture = (event, cancelled = false) => {
+          if (event.pointerId !== pointerId) return;
+          el.trayToggle.classList.remove('is-dragging');
+          if (el.trayToggle.hasPointerCapture(pointerId)) el.trayToggle.releasePointerCapture(pointerId);
+          suppressClick = !cancelled && dragged;
+          pointerId = null;
+          requestAnimationFrame(() => { dragged = false; });
+        };
+
+        el.trayToggle.addEventListener('pointerup', finishTrayGesture);
+        el.trayToggle.addEventListener('pointercancel', event => finishTrayGesture(event, true));
+        el.trayToggle.addEventListener('click', () => {
+          if (suppressClick) {
+            suppressClick = false;
+            return;
+          }
+          setTrayExpanded(!state.trayExpanded);
+        });
+      }
+
       document.querySelectorAll('.avatar-button').forEach(button => {
         button.addEventListener('click', () => {
           state.target = button.dataset.target;
@@ -2158,11 +2227,6 @@
       });
       el.pairAction.addEventListener('click', () => setPairing(!state.pairing));
       el.pairDone.addEventListener('click', () => setPairing(!state.pairing));
-      el.trayToggle.addEventListener('click', () => {
-        state.trayExpanded = !state.trayExpanded;
-        if (!state.trayExpanded) el.outfitThumbs.scrollTo({ top: 0, behavior: 'smooth' });
-        updateTrayHeight();
-      });
       el.importAction.addEventListener('click', showImportSheet);
       el.filterAction.addEventListener('click', () => {
         setFabMenu(false);
@@ -2201,6 +2265,7 @@
       renderSelectionMode();
       renderTray();
       bindFabDrag();
+      bindTrayHandle();
       requestAnimationFrame(updateChromeMetrics);
     })();
   </script>
