@@ -958,7 +958,7 @@
       transition-delay: 20ms, 0s;
     }
 
-    .orbit-lines ellipse {
+    .orbit-lines path {
       fill: none;
       stroke: rgba(112, 92, 96, 0.13);
       stroke-width: 1;
@@ -975,12 +975,12 @@
       stroke-dashoffset: -34;
     }
 
-    .fab-layer[data-template="centerMiddle"] .orbit-lines ellipse {
+    .fab-layer[data-template="centerMiddle"] .orbit-lines path {
       stroke-dasharray: 86 34 28 58;
     }
 
-    .fab-layer[data-edge="true"] .orbit-lines ellipse {
-      stroke-dasharray: 104 48 34 82;
+    .fab-layer[data-edge="true"] .orbit-lines path {
+      stroke-dasharray: 168 34 74 56;
     }
 
     .fab,
@@ -1352,7 +1352,7 @@
       </main>
 
       <div class="fab-layer" id="fabLayer" aria-label="快捷操作">
-        <svg class="orbit-lines" id="orbitLines" aria-hidden="true"><ellipse id="orbitOuter"/><ellipse id="orbitInner"/></svg>
+        <svg class="orbit-lines" id="orbitLines" aria-hidden="true"><path id="orbitOuter"/><path id="orbitInner"/></svg>
         <button class="radial-action" id="modeAction" type="button" aria-label="切换到单品模式" style="--delay: 30ms; --planet-size: 54px; --planet-icon: 20px">
           <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M8.2 5.1 12 3l3.8 2.1 3.7 1.2-1.6 4.1-2.4-.9V21h-7V9.5l-2.4.9-1.6-4.1 3.7-1.2Z"/></svg>
           <span class="radial-label" id="modeActionLabel">单品</span>
@@ -1893,22 +1893,22 @@
       function buildOrbitLayout(templateName, fabCenter, bounds) {
         const templates = {
           rightTop: {
-            pair: [165, 92], mode: [125, 105], import: [105, 158], filter: [135, 158], multi: [180, 150]
+            filter: [180, 178], multi: [158, 166], pair: [138, 128], mode: [112, 150], import: [90, 190]
           },
           rightMiddle: {
-            pair: [205, 92], mode: [155, 94], import: [135, 154], filter: [225, 154], multi: [180, 150]
+            filter: [270, 184], multi: [225, 170], pair: [198, 126], mode: [162, 142], import: [90, 190]
           },
           rightBottom: {
-            pair: [195, 92], mode: [235, 105], import: [255, 158], filter: [225, 158], multi: [180, 150]
+            filter: [270, 190], multi: [248, 150], pair: [222, 128], mode: [202, 142], import: [180, 178]
           },
           leftTop: {
-            pair: [15, 92], mode: [55, 105], import: [75, 158], filter: [45, 158], multi: [0, 150]
+            filter: [0, 178], multi: [22, 166], pair: [42, 128], mode: [68, 150], import: [90, 190]
           },
           leftMiddle: {
-            pair: [335, 92], mode: [25, 94], import: [45, 154], filter: [315, 154], multi: [0, 150]
+            filter: [270, 184], multi: [315, 170], pair: [342, 126], mode: [18, 142], import: [90, 190]
           },
           leftBottom: {
-            pair: [345, 92], mode: [305, 105], import: [285, 158], filter: [315, 158], multi: [0, 150]
+            filter: [270, 190], multi: [292, 150], pair: [318, 128], mode: [338, 142], import: [0, 178]
           },
           centerTop: {
             pair: [145, 88], mode: [35, 90], import: [90, 158], filter: [115, 132], multi: [65, 134]
@@ -1977,6 +1977,33 @@
         return null;
       }
 
+      function orbitArcPath(templateName, center, radiusX, radiusY) {
+        const x = center.x;
+        const y = center.y;
+        const right = templateName.startsWith('right');
+        const left = templateName.startsWith('left');
+        const top = templateName.endsWith('Top');
+        const bottom = templateName.endsWith('Bottom');
+        const direction = right ? -1 : 1;
+
+        if ((right || left) && !top && !bottom) {
+          return `M ${x} ${y - radiusY} C ${x + direction * radiusX * 1.18} ${y - radiusY * 0.9}, ${x + direction * radiusX * 1.18} ${y + radiusY * 0.9}, ${x} ${y + radiusY}`;
+        }
+        if ((right || left) && top) {
+          return `M ${x + direction * radiusX} ${y} C ${x + direction * radiusX * 0.86} ${y + radiusY * 0.58}, ${x + direction * radiusX * 0.42} ${y + radiusY * 0.92}, ${x} ${y + radiusY}`;
+        }
+        if ((right || left) && bottom) {
+          return `M ${x} ${y - radiusY} C ${x + direction * radiusX * 0.42} ${y - radiusY * 0.92}, ${x + direction * radiusX * 0.86} ${y - radiusY * 0.58}, ${x + direction * radiusX} ${y}`;
+        }
+        if (top) {
+          return `M ${x - radiusX} ${y} C ${x - radiusX * 0.58} ${y + radiusY * 1.08}, ${x + radiusX * 0.58} ${y + radiusY * 1.08}, ${x + radiusX} ${y}`;
+        }
+        if (bottom) {
+          return `M ${x - radiusX} ${y} C ${x - radiusX * 0.58} ${y - radiusY * 1.08}, ${x + radiusX * 0.58} ${y - radiusY * 1.08}, ${x + radiusX} ${y}`;
+        }
+        return `M ${x - radiusX} ${y} A ${radiusX} ${radiusY} 0 1 0 ${x + radiusX} ${y} A ${radiusX} ${radiusY} 0 1 0 ${x - radiusX} ${y}`;
+      }
+
       function positionRadialActions(open) {
         const bounds = getFabBounds();
         const fabCenter = { x: state.fab.x + bounds.fabSize / 2, y: state.fab.y + bounds.fabSize / 2 };
@@ -2009,14 +2036,9 @@
         const innerPlanets = layout.filter(planet => planet.key === 'pair' || planet.key === 'mode');
         const innerX = Math.max(62, ...innerPlanets.map(planet => Math.abs(planet.centerX - fabCenter.x) + 12));
         const innerY = Math.max(58, ...innerPlanets.map(planet => Math.abs(planet.centerY - fabCenter.y) + 12));
-        const tilt = templateName.startsWith('right') ? 14 : templateName.startsWith('left') ? -14 : templateName === 'centerMiddle' ? 12 : 0;
         const edgeTemplate = templateName.startsWith('right') || templateName.startsWith('left');
-        [[el.orbitOuter, outerX + (edgeTemplate ? 12 : 0), outerY + (edgeTemplate ? 18 : 0), tilt], [el.orbitInner, innerX, innerY, -tilt * 0.5]].forEach(([orbit, radiusX, radiusY, rotation]) => {
-          orbit.setAttribute('cx', fabCenter.x);
-          orbit.setAttribute('cy', fabCenter.y);
-          orbit.setAttribute('rx', radiusX);
-          orbit.setAttribute('ry', radiusY);
-          orbit.setAttribute('transform', `rotate(${rotation} ${fabCenter.x} ${fabCenter.y})`);
+        [[el.orbitOuter, outerX + (edgeTemplate ? 12 : 0), outerY + (edgeTemplate ? 18 : 0)], [el.orbitInner, innerX, innerY]].forEach(([orbit, radiusX, radiusY]) => {
+          orbit.setAttribute('d', orbitArcPath(templateName, fabCenter, radiusX, radiusY));
         });
       }
 
