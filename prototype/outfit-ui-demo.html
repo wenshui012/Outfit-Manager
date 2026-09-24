@@ -1892,24 +1892,6 @@
 
       function buildOrbitLayout(templateName, fabCenter, bounds) {
         const templates = {
-          rightTop: {
-            filter: [180, 178], multi: [158, 166], pair: [138, 128], mode: [112, 150], import: [90, 190]
-          },
-          rightMiddle: {
-            filter: [270, 184], multi: [225, 170], pair: [198, 126], mode: [162, 142], import: [90, 190]
-          },
-          rightBottom: {
-            filter: [270, 190], multi: [248, 150], pair: [222, 128], mode: [202, 142], import: [180, 178]
-          },
-          leftTop: {
-            filter: [0, 178], multi: [22, 166], pair: [42, 128], mode: [68, 150], import: [90, 190]
-          },
-          leftMiddle: {
-            filter: [270, 184], multi: [315, 170], pair: [342, 126], mode: [18, 142], import: [90, 190]
-          },
-          leftBottom: {
-            filter: [270, 190], multi: [292, 150], pair: [318, 128], mode: [338, 142], import: [0, 178]
-          },
           centerTop: {
             pair: [145, 88], mode: [35, 90], import: [90, 158], filter: [115, 132], multi: [65, 134]
           },
@@ -1927,13 +1909,54 @@
           { key: 'filter', node: el.filterAction, size: 44 },
           { key: 'multi', node: el.multiAction, size: 44 }
         ];
-        const base = templates[templateName];
         const safeInset = 2;
         const edgeTemplate = templateName.startsWith('left') || templateName.startsWith('right');
-        const angleOffsets = edgeTemplate ? [0, -6, 6, -12, 12, -18, 18] : [0, -8, 8, -16, 16];
-        const radiusOffsets = edgeTemplate ? [0, 12, 24, -4, 36] : [0, 10, -8, 18, -14];
-        const scales = edgeTemplate ? [1, 1.06, 1.12] : [1, 0.96, 1.05, 0.9];
         const visualGap = 14;
+
+        if (edgeTemplate) {
+          // The star stays at its dragged position; only the orbit's vertical offsets are compressed.
+          const edgeYScale = 0.76;
+          const middle = { filter: [45, -155], multi: [130, -85], pair: [125, 0], mode: [95, 100], import: [45, 155] };
+          const top = { filter: [125, -85], multi: [150, -15], pair: [105, 45], mode: [65, 125], import: [0, 170] };
+          const topCorner = { filter: [125, -5], multi: [150, 65], pair: [95, 105], mode: [30, 130], import: [0, 210] };
+          const bottom = { filter: [15, -170], multi: [85, -125], pair: [120, -40], mode: [85, 60], import: [150, 70] };
+          const bottomCorner = { filter: [15, -205], multi: [75, -185], pair: [95, -105], mode: [95, -15], import: [160, 0] };
+          const distanceToEdge = templateName.endsWith('Top')
+            ? fabCenter.y - bounds.appTop
+            : bounds.appTop + bounds.appHeight - fabCenter.y;
+          const cornerMix = Math.max(0, Math.min(1, (112 - distanceToEdge) / 75));
+          const normal = templateName.endsWith('Top') ? top : templateName.endsWith('Bottom') ? bottom : middle;
+          const corner = templateName.endsWith('Top') ? topCorner : templateName.endsWith('Bottom') ? bottomCorner : middle;
+          const inward = templateName.startsWith('right') ? -1 : 1;
+          const placed = planets.map(planet => {
+            const [normalX, normalY] = normal[planet.key];
+            const [cornerX, cornerY] = corner[planet.key];
+            const arcBend = Math.sin(Math.PI * cornerMix);
+            const topBend = templateName.endsWith('Top') && planet.key === 'mode' ? -4 * arcBend : 0;
+            const topTail = templateName.endsWith('Top') && planet.key === 'import' ? 6 * arcBend : 0;
+            const distanceX = normalX + (cornerX - normalX) * cornerMix + topBend;
+            const offsetY = (normalY + (cornerY - normalY) * cornerMix + topTail) * edgeYScale;
+            const centerX = fabCenter.x + inward * distanceX;
+            const centerY = fabCenter.y + offsetY;
+            return {
+              key: planet.key,
+              node: planet.node,
+              size: planet.size,
+              centerX,
+              centerY,
+              left: centerX - planet.size / 2,
+              top: centerY - planet.size / 2
+            };
+          });
+          const inside = placed.every(planet => planet.left >= bounds.planetMinX + safeInset && planet.left + planet.size <= bounds.planetMaxX - safeInset && planet.top >= bounds.planetMinY && planet.top + planet.size <= bounds.planetMaxY);
+          const spaced = placed.every((planet, index) => placed.slice(index + 1).every(other => Math.hypot(planet.centerX - other.centerX, planet.centerY - other.centerY) >= planet.size / 2 + other.size / 2 + visualGap - 0.5));
+          return inside && spaced ? placed : null;
+        }
+
+        const base = templates[templateName];
+        const angleOffsets = [0, -8, 8, -16, 16];
+        const radiusOffsets = [0, 10, -8, 18, -14];
+        const scales = [1, 0.96, 1.05, 0.9];
 
         for (const scale of scales) {
           const placed = [];
@@ -1977,7 +2000,7 @@
         return null;
       }
 
-      function orbitArcPath(templateName, center, radiusX, radiusY) {
+      function orbitArcPath(templateName, center, radiusX, radiusY, topOffset = -radiusY, bottomOffset = radiusY) {
         const x = center.x;
         const y = center.y;
         const right = templateName.startsWith('right');
@@ -1986,14 +2009,9 @@
         const bottom = templateName.endsWith('Bottom');
         const direction = right ? -1 : 1;
 
-        if ((right || left) && !top && !bottom) {
-          return `M ${x} ${y - radiusY} C ${x + direction * radiusX * 1.18} ${y - radiusY * 0.9}, ${x + direction * radiusX * 1.18} ${y + radiusY * 0.9}, ${x} ${y + radiusY}`;
-        }
-        if ((right || left) && top) {
-          return `M ${x + direction * radiusX} ${y} C ${x + direction * radiusX * 0.86} ${y + radiusY * 0.58}, ${x + direction * radiusX * 0.42} ${y + radiusY * 0.92}, ${x} ${y + radiusY}`;
-        }
-        if ((right || left) && bottom) {
-          return `M ${x} ${y - radiusY} C ${x + direction * radiusX * 0.42} ${y - radiusY * 0.92}, ${x + direction * radiusX * 0.86} ${y - radiusY * 0.58}, ${x + direction * radiusX} ${y}`;
+        if (right || left) {
+          const span = bottomOffset - topOffset;
+          return `M ${x} ${y + topOffset} C ${x + direction * radiusX * 1.18} ${y + topOffset + span * 0.1}, ${x + direction * radiusX * 1.18} ${y + bottomOffset - span * 0.1}, ${x} ${y + bottomOffset}`;
         }
         if (top) {
           return `M ${x - radiusX} ${y} C ${x - radiusX * 0.58} ${y + radiusY * 1.08}, ${x + radiusX * 0.58} ${y + radiusY * 1.08}, ${x + radiusX} ${y}`;
@@ -2030,15 +2048,24 @@
         });
 
         el.orbitLines.setAttribute('viewBox', `0 0 ${bounds.width} ${bounds.height}`);
-        const offsets = layout.map(planet => ({ x: Math.abs(planet.centerX - fabCenter.x), y: Math.abs(planet.centerY - fabCenter.y) }));
+        if (!layout.length) {
+          el.orbitOuter.setAttribute('d', '');
+          el.orbitInner.setAttribute('d', '');
+          return;
+        }
+        const offsets = layout.map(planet => ({ x: Math.abs(planet.centerX - fabCenter.x), y: planet.centerY - fabCenter.y }));
         const outerX = Math.max(82, ...offsets.map(point => point.x + 18));
-        const outerY = Math.max(74, ...offsets.map(point => point.y + 18));
+        const outerY = Math.max(64, ...offsets.map(point => Math.abs(point.y) + (el.fabLayer.dataset.edge === 'true' ? 10 : 18)));
         const innerPlanets = layout.filter(planet => planet.key === 'pair' || planet.key === 'mode');
         const innerX = Math.max(62, ...innerPlanets.map(planet => Math.abs(planet.centerX - fabCenter.x) + 12));
-        const innerY = Math.max(58, ...innerPlanets.map(planet => Math.abs(planet.centerY - fabCenter.y) + 12));
+        const innerY = Math.max(48, ...innerPlanets.map(planet => Math.abs(planet.centerY - fabCenter.y) + (el.fabLayer.dataset.edge === 'true' ? 8 : 12)));
         const edgeTemplate = templateName.startsWith('right') || templateName.startsWith('left');
-        [[el.orbitOuter, outerX + (edgeTemplate ? 12 : 0), outerY + (edgeTemplate ? 18 : 0)], [el.orbitInner, innerX, innerY]].forEach(([orbit, radiusX, radiusY]) => {
-          orbit.setAttribute('d', orbitArcPath(templateName, fabCenter, radiusX, radiusY));
+        const outerTop = edgeTemplate ? Math.min(...offsets.map(point => point.y - 10)) : -outerY;
+        const outerBottom = edgeTemplate ? Math.max(...offsets.map(point => point.y + 10)) : outerY;
+        const innerTop = edgeTemplate ? Math.min(...innerPlanets.map(planet => planet.centerY - fabCenter.y - 8)) : -innerY;
+        const innerBottom = edgeTemplate ? Math.max(...innerPlanets.map(planet => planet.centerY - fabCenter.y + 8)) : innerY;
+        [[el.orbitOuter, outerX + (edgeTemplate ? 12 : 0), outerY, outerTop, outerBottom], [el.orbitInner, innerX, innerY, innerTop, innerBottom]].forEach(([orbit, radiusX, radiusY, topOffset, bottomOffset]) => {
+          orbit.setAttribute('d', orbitArcPath(templateName, fabCenter, radiusX, radiusY, topOffset, bottomOffset));
         });
       }
 
